@@ -1,0 +1,21 @@
+server:
+  port: 8180
+
+mqtt:
+  broker:
+    host: 0.0.0.0
+    port: 1883
+  topic: sensors/demo/measur
+  client-id: ${MQTT_CLIENT_ID:camel-demo}
+
+
+camel:
+  component:
+    paho:
+      broker-url: ${MQTT_BROKER_URL:tcp://127.0.0.1:${mqtt.broker.port}}
+      automatic-reconnect: true
+# Uncomment if your broker requires authentication.
+#      user-name: ${MQTT_USERNAME}
+#      password: ${MQTT_PASSWORD}
+
+
