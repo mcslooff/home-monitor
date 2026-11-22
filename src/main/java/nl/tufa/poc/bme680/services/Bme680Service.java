@@ -82,6 +82,7 @@ public class Bme680Service {
 			Bme680Measurement item = persistQueue.poll();
 			empty = (item == null);
 			if(item != null) {
+				log.info("{}", item.toString());
 				// Persist.
 				count++;
 			}
