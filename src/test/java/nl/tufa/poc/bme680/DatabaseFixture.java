@@ -1,5 +1,7 @@
 package nl.tufa.poc.bme680;
 
+import java.util.Map;
+
 import javax.sql.DataSource;
 
 import org.flywaydb.core.Flyway;
@@ -47,6 +49,11 @@ public final class DatabaseFixture implements AutoCloseable {
 
 	public Flyway flyway() {
 		return Flyway.configure().dataSource(dataSource()).cleanDisabled(true).load();
+	}
+
+	public Map<String, String> springProperties() {
+		return Map.of("spring.datasource.url", url,
+				"spring.datasource.username", username, "spring.datasource.password", password);
 	}
 
 	public void configure(ProcessBuilder builder) {

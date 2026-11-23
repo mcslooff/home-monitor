@@ -72,6 +72,18 @@ De eerste migratie voegt alleen identiteitstabellen toe:
 - `mqtt_identity`: aparte MQTT-gebruikersnamen, hashes en actieve status voor `DEVICE`- en `SERVICE`-accounts. Elk apparaat heeft een unieke, stabiele apparaat-ID; serviceaccounts hebben geen apparaat-ID.
 - `mqtt_grant`: exacte topics per MQTT-account, met aparte `PUBLISH`- en `SUBSCRIBE`-rechten. Wildcards en systeemtopics zijn in deze opslagbasis niet toegestaan.
 
+De opslag volgt een naar binnen gerichte afhankelijkheidsstructuur:
+
+```text
+identity/domain/model                Frameworkvrije domeinmodellen
+identity/domain/port                 Repositoryinterfaces voor opslag en ophalen
+identity/infrastructure/persistence   JPA-entiteiten, Spring Data-repositories en adapters
+```
+
+Toekomstige applicatielogica gebruikt de domeininterfaces, niet de JPA-entiteiten of Spring Data-repositories. De adapters vertalen tussen domeinmodellen en database-entiteiten en begrenzen transacties. Spring Data genereert de opslag- en zoekqueries met gebonden parameters; er staan geen SQL-strings in de productie-Java-code. Eventuele maatwerkqueries horen als `@Query` op een Spring Data-repository. Alleen de testrepositories hebben native `@Query`-probes om databaseconstraints onafhankelijk van Java-validatie te controleren. De tests bewaken ook dat het domein niet van Spring, JPA of infrastructuur afhankelijk is.
+
+Flyway blijft als enige verantwoordelijk voor schemawijzigingen. Hibernate valideert uitsluitend de entiteitmapping tegen het bestaande schema (`ddl-auto: validate`) en wijzigt geen tabellen; `open-in-view` is uitgeschakeld.
+
 Er worden geen accounts, wachtwoorden of topicrechten door migraties aangemaakt. Nieuwe wachtwoorden worden met de gedeelde Spring `PasswordEncoder` als BCrypt-hash met `{bcrypt}`-prefix opgeslagen. De Java-modellen en databaseconstraints weigeren plaintext en `{noop}`-waarden. Hashes worden in modeldiagnostiek afgeschermd; gebruik deze interne opslagmodellen niet als API-respons. Een nieuw hashalgoritme vraagt een expliciete beleids- en schemamigratie; de prefix maakt gecontroleerde ondersteuning van meerdere algoritmen mogelijk.
 
 Wijzig nooit een toegepaste migratie. Voeg een nieuwe versie toe, maak vóór een migratie een databaseback-up en herstel bij een probleem een compatibele versie of pas een gecontroleerde forward-fix toe. MariaDB-DDL is niet als geheel transactioneel: een mislukte migratie kan gedeeltelijke tabellen achterlaten. Onderzoek en herstel die situatie voordat je Flyway opnieuw uitvoert; gebruik geen automatische `clean` of `repair` als herstelstrategie.

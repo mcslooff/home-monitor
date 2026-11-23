@@ -2,6 +2,10 @@ server:
   port: 8180
 
 spring:
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
   datasource:
     url: ${DB_URL}
     username: ${DB_USERNAME}
@@ -31,4 +35,3 @@ camel:
 # Uncomment if your broker requires authentication.
 #      user-name: ${MQTT_USERNAME}
 #      password: ${MQTT_PASSWORD}
-

@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Test;
 
+import nl.tufa.poc.bme680.identity.domain.model.PasswordHash;
 import nl.tufa.poc.bme680.security.WebSecurity;
 
 class PasswordHashTest {

@@ -5,42 +5,57 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.UUID;
 
-import javax.sql.DataSource;
-
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.context.annotation.AnnotationConfigApplicationContext;
-import org.springframework.context.annotation.Bean;
+import org.springframework.boot.WebApplicationType;
+import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
+import org.springframework.boot.builder.SpringApplicationBuilder;
+import org.springframework.boot.persistence.autoconfigure.EntityScan;
+import org.springframework.boot.test.util.TestPropertyValues;
+import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataAccessException;
-import org.springframework.jdbc.core.simple.JdbcClient;
-import org.springframework.jdbc.datasource.DataSourceTransactionManager;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.annotation.EnableTransactionManagement;
+import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import nl.tufa.poc.bme680.DatabaseFixture;
-import nl.tufa.poc.bme680.identity.HttpUser.Role;
-import nl.tufa.poc.bme680.identity.MqttGrant.Permission;
-import nl.tufa.poc.bme680.identity.MqttIdentity.Kind;
+import nl.tufa.poc.bme680.identity.domain.model.HttpUser;
+import nl.tufa.poc.bme680.identity.domain.model.HttpUser.Role;
+import nl.tufa.poc.bme680.identity.domain.model.MqttGrant;
+import nl.tufa.poc.bme680.identity.domain.model.MqttGrant.Permission;
+import nl.tufa.poc.bme680.identity.domain.model.MqttIdentity;
+import nl.tufa.poc.bme680.identity.domain.model.MqttIdentity.Kind;
+import nl.tufa.poc.bme680.identity.domain.model.PasswordHash;
+import nl.tufa.poc.bme680.identity.domain.port.HttpUserRepository;
+import nl.tufa.poc.bme680.identity.domain.port.MqttIdentityRepository;
+import nl.tufa.poc.bme680.identity.infrastructure.persistence.HttpUserEntity;
+import nl.tufa.poc.bme680.identity.infrastructure.persistence.IdentityConstraintProbeRepository;
+import nl.tufa.poc.bme680.identity.infrastructure.persistence.JpaHttpUserRepositoryAdapter;
+import nl.tufa.poc.bme680.identity.infrastructure.persistence.JpaMqttIdentityRepositoryAdapter;
+import nl.tufa.poc.bme680.identity.infrastructure.persistence.SpringDataHttpUserRepository;
 import nl.tufa.poc.bme680.security.WebSecurity;
 
 class IdentityStoreIT {
-
 	private static DatabaseFixture database;
 	private static PasswordHash hash;
+	private ConfigurableApplicationContext context;
+	private HttpUserRepository users;
+	private MqttIdentityRepository mqtt;
+	private IdentityConstraintProbeRepository probes;
+	private String prefix;
 
 	@BeforeAll
-	static void migrateEmptyDatabase() {
+	static void startDatabase() {
 		database = DatabaseFixture.open();
-		database.flyway().migrate();
 		hash = new PasswordHash(new WebSecurity().passwordEncoder().encode("test-only-secret"));
 	}
 
@@ -51,177 +66,172 @@ class IdentityStoreIT {
 		}
 	}
 
-	@Test
-	void identitiesRolesAndGrantsSurviveReopeningAndMigrationIsNotReapplied() {
-		String username = uniqueName();
-		HttpUser user;
-		MqttIdentity device;
-		MqttIdentity service;
-		MqttGrant publish;
-		MqttGrant subscribe;
-		try {
-			try (var context = context()) {
-				var users = context.getBean(HttpUserRepository.class);
-				var mqtt = context.getBean(MqttIdentityRepository.class);
-				user = users.create(username, hash, true, Set.of(Role.ADMIN, Role.USER));
-				device = mqtt.create(username, hash, true, Kind.DEVICE, username);
-				service = mqtt.create(username + "svc", hash, false, Kind.SERVICE, null);
-				publish = new MqttGrant(device.id(), "sensors/" + username + "/measur", Permission.PUBLISH);
-				subscribe = new MqttGrant(service.id(), publish.topic(), Permission.SUBSCRIBE);
-				mqtt.addGrant(publish);
-				mqtt.addGrant(subscribe);
-				assertTrue(users.findByUsername("absent-" + username).isEmpty());
-				assertTrue(mqtt.findByUsername("absent-" + username).isEmpty());
-				assertTrue(users.findByUsername(username + " ").isEmpty());
-				assertTrue(mqtt.findByUsername(username + " ").isEmpty());
-				assertTrue(users.findByUsername(username.toUpperCase(java.util.Locale.ROOT)).isEmpty());
-				assertFalse(user.toString().contains(hash.encoded()));
-				assertFalse(device.toString().contains(hash.encoded()));
-			}
-			assertEquals(0, database.flyway().migrate().migrationsExecuted);
-			database.flyway().validate();
-			try (var context = context()) {
-				var users = context.getBean(HttpUserRepository.class);
-				var mqtt = context.getBean(MqttIdentityRepository.class);
-				assertEquals(user, users.findByUsername(username).orElseThrow());
-				assertEquals(device, mqtt.findByUsername(username).orElseThrow());
-				assertEquals(service, mqtt.findByUsername(username + "svc").orElseThrow());
-				assertEquals(Set.of(publish), Set.copyOf(mqtt.findGrants(device.id())));
-				assertEquals(Set.of(subscribe), Set.copyOf(mqtt.findGrants(service.id())));
-			}
-		} finally {
-			// Only remove rows created by this test, including with an external test DB.
-			try (var context = context()) {
-				JdbcClient jdbc = context.getBean(JdbcClient.class);
-				jdbc.sql("""
-						DELETE FROM mqtt_grant WHERE identity_id IN
-						(SELECT id FROM mqtt_identity WHERE username IN (:name, :service))
-						""").param("name", username).param("service", username + "svc").update();
-				jdbc.sql("DELETE FROM mqtt_identity WHERE username IN (:name, :service)")
-						.param("name", username).param("service", username + "svc").update();
-				jdbc.sql("DELETE FROM http_user_role WHERE user_id IN (SELECT id FROM http_user WHERE username = :name)")
-						.param("name", username).update();
-				jdbc.sql("DELETE FROM http_user WHERE username = :name").param("name", username).update();
+	@BeforeEach
+	void openContext() {
+		prefix = "it" + UUID.randomUUID().toString().replace("-", "");
+		reopenContext();
+	}
+
+	@AfterEach
+	void cleanUpOwnedRowsAndCloseContext() {
+		if (context != null) {
+			try {
+				new TransactionTemplate(context.getBean(PlatformTransactionManager.class)).executeWithoutResult(status -> {
+					probes.deleteGrants(prefix + "%");
+					probes.deleteMqttIdentities(prefix + "%");
+					probes.deleteRoles(prefix + "%");
+					probes.deleteUsers(prefix + "%");
+				});
+			} finally {
+				context.close();
 			}
 		}
+	}
+
+	@Test
+	void identitiesRolesAndGrantsSurviveReopeningAndMigrationIsNotReapplied() {
+		var user = users.save(new HttpUser(null, prefix, hash, true, Set.of(Role.ADMIN, Role.USER)));
+		var device = mqtt.save(new MqttIdentity(null, prefix, hash, true, Kind.DEVICE, prefix));
+		var service = mqtt.save(new MqttIdentity(null, prefix + "svc", hash, false, Kind.SERVICE, null));
+		var publish = new MqttGrant(device.id(), "sensors/" + prefix + "/measur", Permission.PUBLISH);
+		var subscribe = new MqttGrant(service.id(), publish.topic(), Permission.SUBSCRIBE);
+		mqtt.addGrant(publish);
+		mqtt.addGrant(subscribe);
+		assertTrue(users.findByUsername("absent-" + prefix).isEmpty());
+		assertTrue(mqtt.findByUsername("absent-" + prefix).isEmpty());
+		assertTrue(users.findByUsername(prefix + " ").isEmpty());
+		assertTrue(mqtt.findByUsername(prefix + " ").isEmpty());
+		assertTrue(users.findByUsername(prefix.toUpperCase(java.util.Locale.ROOT)).isEmpty());
+		assertFalse(user.toString().contains(hash.encoded()));
+		assertFalse(device.toString().contains(hash.encoded()));
+		reopenContext();
+		assertEquals(0, database.flyway().migrate().migrationsExecuted);
+		database.flyway().validate();
+		assertEquals(user, users.findByUsername(prefix).orElseThrow());
+		assertEquals(device, mqtt.findByUsername(prefix).orElseThrow());
+		assertEquals(service, mqtt.findByUsername(prefix + "svc").orElseThrow());
+		assertEquals(Set.of(publish), Set.copyOf(mqtt.findGrants(device.id())));
+		assertEquals(Set.of(subscribe), Set.copyOf(mqtt.findGrants(service.id())));
+	}
+
+	@Test
+	void savingExistingModelsUpdatesUserRolesAndIdentityState() {
+		var user = users.save(new HttpUser(null, prefix, hash, true, Set.of(Role.USER, Role.SENSOR)));
+		var updated = new HttpUser(user.id(), prefix, hash, false, Set.of(Role.ADMIN));
+		assertEquals(updated, users.save(updated));
+		assertEquals(updated, users.findByUsername(prefix).orElseThrow());
+		var service = mqtt.save(new MqttIdentity(null, prefix, hash, true, Kind.SERVICE, null));
+		var disabled = new MqttIdentity(service.id(), prefix, hash, false, Kind.SERVICE, null);
+		assertEquals(disabled, mqtt.save(disabled));
+		assertEquals(disabled, mqtt.findByUsername(prefix).orElseThrow());
 	}
 
 	@Test
 	void databaseEnforcesUniquenessRelationshipsAndCredentialAndPrincipalConstraints() {
-		try (var context = context()) {
-			var transaction = new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
-			transaction.executeWithoutResult(status -> {
-				status.setRollbackOnly();
-				var users = context.getBean(HttpUserRepository.class);
-				var mqtt = context.getBean(MqttIdentityRepository.class);
-				var jdbc = context.getBean(JdbcClient.class);
-				String name = uniqueName();
-				var user = users.create(name, hash, true, Set.of(Role.SENSOR));
-				var device = mqtt.create(name, hash, true, Kind.DEVICE, name);
-				assertThrows(DataAccessException.class, () -> users.create(name, hash, false, Set.of()));
-				assertThrows(DataAccessException.class, () -> mqtt.create(name, hash, true, Kind.SERVICE, null));
-				assertThrows(DataAccessException.class, () -> mqtt.create(name + "2", hash, true, Kind.DEVICE, name));
-				assertThrows(DataAccessException.class, () -> mqtt.create(name + "2", hash, true, Kind.DEVICE, null));
-				assertThrows(DataAccessException.class, () -> mqtt.create(name + "2", hash, true, Kind.SERVICE, name));
-				assertThrows(DataAccessException.class, () -> jdbc.sql(
-						"INSERT INTO http_user_role (user_id, role) VALUES (:id, 'SUPERUSER')")
-						.param("id", user.id()).update());
-				assertThrows(DataAccessException.class, () -> jdbc.sql(
-						"INSERT INTO http_user_role (user_id, role) VALUES (-1, 'USER')").update());
-				assertThrows(DataAccessException.class, () -> mqtt.addGrant(
-						new MqttGrant(-1, "sensors/test/measur", Permission.PUBLISH)));
-				assertThrows(DataAccessException.class, () -> mqtt.addGrant(
-						new MqttGrant(device.id(), "sensors/+/measur", Permission.PUBLISH)));
-				var grant = new MqttGrant(device.id(), "sensors/test/measur", Permission.PUBLISH);
-				mqtt.addGrant(grant);
-				assertThrows(DataAccessException.class, () -> mqtt.addGrant(grant));
-				for (String invalidHash : new String[] {
-						"plaintext-is-not-a-hash", "{noop}plaintext-is-not-a-hash", hash.encoded() + "\n"}) {
-					assertThrows(DataAccessException.class, () -> jdbc.sql(
-							"UPDATE http_user SET password_hash = :hash WHERE id = :id")
-							.param("hash", invalidHash).param("id", user.id()).update());
-					assertThrows(DataAccessException.class, () -> jdbc.sql(
-							"UPDATE mqtt_identity SET password_hash = :hash WHERE id = :id")
-							.param("hash", invalidHash).param("id", device.id()).update());
-				}
-				assertThrows(DataAccessException.class, () -> jdbc.sql(
-						"UPDATE http_user SET password_hash = NULL WHERE id = :id").param("id", user.id()).update());
-				assertThrows(DataAccessException.class, () -> jdbc.sql(
-						"UPDATE mqtt_identity SET device_id = :device WHERE id = :id")
-						.param("device", name + "\n").param("id", device.id()).update());
-				assertThrows(DataAccessException.class, () -> jdbc.sql(
-						"INSERT INTO mqtt_grant (identity_id, topic, permission) VALUES (:id, 'test', 'ALL')")
-						.param("id", device.id()).update());
-				assertThrows(DataAccessException.class, () -> mqtt.addGrant(
-						new MqttGrant(device.id(), "$SYS/test", Permission.SUBSCRIBE)));
-			});
+		var user = users.save(new HttpUser(null, prefix, hash, true, Set.of(Role.SENSOR)));
+		var device = mqtt.save(new MqttIdentity(null, prefix, hash, true, Kind.DEVICE, prefix));
+		assertThrows(DataAccessException.class, () -> users.save(new HttpUser(null, prefix, hash, false, Set.of())));
+		assertThrows(DataAccessException.class, () -> mqtt.save(
+				new MqttIdentity(null, prefix, hash, true, Kind.SERVICE, null)));
+		assertThrows(DataAccessException.class, () -> mqtt.save(
+				new MqttIdentity(null, prefix + "2", hash, true, Kind.DEVICE, prefix)));
+		assertThrows(DataAccessException.class, () -> mqtt.save(
+				new MqttIdentity(null, prefix + "2", hash, true, Kind.DEVICE, null)));
+		assertThrows(DataAccessException.class, () -> mqtt.save(
+				new MqttIdentity(null, prefix + "2", hash, true, Kind.SERVICE, prefix)));
+		assertThrows(DataAccessException.class, () -> probes.insertRole(user.id(), "SUPERUSER"));
+		assertThrows(DataAccessException.class, () -> probes.insertRole(-1, "USER"));
+		assertThrows(DataAccessException.class, () -> mqtt.addGrant(
+				new MqttGrant(-1, "sensors/test/measur", Permission.PUBLISH)));
+		assertThrows(DataAccessException.class, () -> mqtt.addGrant(
+				new MqttGrant(device.id(), "sensors/+/measur", Permission.PUBLISH)));
+		var grant = new MqttGrant(device.id(), "sensors/test/measur", Permission.PUBLISH);
+		mqtt.addGrant(grant);
+		assertThrows(DataAccessException.class, () -> mqtt.addGrant(grant));
+		for (String invalidHash : new String[] {
+				"plaintext-is-not-a-hash", "{noop}plaintext-is-not-a-hash", hash.encoded() + "\n"}) {
+			assertThrows(DataAccessException.class, () -> probes.setUserHash(user.id(), invalidHash));
+			assertThrows(DataAccessException.class, () -> probes.setMqttHash(device.id(), invalidHash));
 		}
+		assertThrows(DataAccessException.class, () -> probes.setUserHash(user.id(), null));
+		assertThrows(DataAccessException.class, () -> probes.setDeviceId(device.id(), prefix + "\n"));
+		assertThrows(DataAccessException.class, () -> probes.insertGrant(device.id(), "test", "ALL"));
+		assertThrows(DataAccessException.class, () -> mqtt.addGrant(
+				new MqttGrant(device.id(), "$SYS/test", Permission.SUBSCRIBE)));
 	}
 
 	@Test
 	void exactTopicsDoNotIgnoreTrailingSpaces() {
-		try (var context = context()) {
-			new TransactionTemplate(context.getBean(PlatformTransactionManager.class)).executeWithoutResult(status -> {
-				status.setRollbackOnly();
-				var mqtt = context.getBean(MqttIdentityRepository.class);
-				var device = mqtt.create(uniqueName(), hash, false, Kind.SERVICE, null);
-				var topic = new MqttGrant(device.id(), "sensors/test/measur", Permission.SUBSCRIBE);
-				var differentTopic = new MqttGrant(device.id(), topic.topic() + " ", Permission.SUBSCRIBE);
-				mqtt.addGrant(topic);
-				mqtt.addGrant(differentTopic);
-				assertEquals(Set.of(topic, differentTopic), Set.copyOf(mqtt.findGrants(device.id())));
-				assertEquals(1, context.getBean(JdbcClient.class)
-						.sql("SELECT COUNT(*) FROM mqtt_grant WHERE identity_id = :id AND topic = :topic")
-						.param("id", device.id()).param("topic", topic.topic()).query(Integer.class).single());
-			});
-		}
+		var service = mqtt.save(new MqttIdentity(null, prefix, hash, false, Kind.SERVICE, null));
+		var topic = new MqttGrant(service.id(), "sensors/test/measur", Permission.SUBSCRIBE);
+		var differentTopic = new MqttGrant(service.id(), topic.topic() + " ", Permission.SUBSCRIBE);
+		mqtt.addGrant(topic);
+		mqtt.addGrant(differentTopic);
+		assertEquals(Set.of(topic, differentTopic), Set.copyOf(mqtt.findGrants(service.id())));
+		assertEquals(1, probes.countExactTopic(service.id(), topic.topic()));
 	}
 
 	@Test
-	void creatingUserAndRolesIsAtomic() {
-		try (var context = context()) {
-			var users = context.getBean(HttpUserRepository.class);
-			Set<Role> invalidRoles = new LinkedHashSet<>();
-			invalidRoles.add(Role.USER);
-			invalidRoles.add(null);
-			String name = uniqueName();
-			assertThrows(NullPointerException.class, () -> users.create(name, hash, true, invalidRoles));
-			assertTrue(users.findByUsername(name).isEmpty());
-		}
+	void userAndRolesRollbackTogetherWhenAnApplicationTransactionFails() {
+		var transaction = new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
+		assertThrows(DataAccessException.class, () -> transaction.executeWithoutResult(status -> {
+			var user = users.save(new HttpUser(null, prefix, hash, true, Set.of(Role.USER)));
+			probes.insertRole(user.id(), "INVALID");
+		}));
+		assertTrue(users.findByUsername(prefix).isEmpty());
+	}
+
+	@Test
+	void repositoryReadsAndWritesTreatInjectionPayloadsAsValues() {
+		var user = users.save(new HttpUser(null, prefix, hash, true, Set.of(Role.USER)));
+		var service = mqtt.save(new MqttIdentity(null, prefix, hash, true, Kind.SERVICE, null));
+		assertTrue(users.findByUsername("' OR 1=1 --").isEmpty());
+		assertTrue(mqtt.findByUsername("' OR 1=1 --").isEmpty());
+		String topic = "sensors/'; DROP TABLE http_user; --";
+		var grant = new MqttGrant(service.id(), topic, Permission.SUBSCRIBE);
+		mqtt.addGrant(grant);
+		assertEquals(Set.of(grant), Set.copyOf(mqtt.findGrants(service.id())));
+		assertEquals(user, users.findByUsername(prefix).orElseThrow());
+		assertThrows(DataAccessException.class, () -> users.save(
+				new HttpUser(null, "'; DROP TABLE mqtt_identity; --", hash, true, Set.of())));
+		assertEquals(service, mqtt.findByUsername(prefix).orElseThrow());
 	}
 
 	@Test
 	void repositoryConnectionErrorsPropagateInsteadOfLookingLikeMissingAccounts() {
-		var unavailable = JdbcClient.create(new DriverManagerDataSource(
-				"jdbc:mariadb://127.0.0.1:1/unavailable?connectTimeout=1000", "unavailable", "unavailable"));
-		assertThrows(DataAccessException.class, () -> new HttpUserRepository(unavailable).findByUsername("test"));
-		assertThrows(DataAccessException.class, () -> new MqttIdentityRepository(unavailable).findByUsername("test"));
+		// Exercise the real JPA adapters with a database credential that cannot log in.
+		database.flyway().validate();
+		var dataSource = context.getBean(com.zaxxer.hikari.HikariDataSource.class);
+		dataSource.getHikariConfigMXBean().setPassword("invalid-" + UUID.randomUUID());
+		dataSource.getHikariPoolMXBean().softEvictConnections();
+		try {
+			assertThrows(CannotCreateTransactionException.class, () -> users.findByUsername(prefix));
+			assertThrows(CannotCreateTransactionException.class, () -> mqtt.findByUsername(prefix));
+		} finally {
+			// Dispose this pool and reopen using the original test credentials for cleanup.
+			reopenContext();
+		}
 	}
 
-	private static String uniqueName() {
-		return "it" + UUID.randomUUID().toString().replace("-", "");
-	}
-
-	private static AnnotationConfigApplicationContext context() {
-		var context = new AnnotationConfigApplicationContext();
-		context.registerBean(DataSource.class, database::dataSource);
-		context.register(RepositoryConfiguration.class);
-		context.refresh();
-		return context;
+	private void reopenContext() {
+		if (context != null) {
+			context.close();
+		}
+		context = new SpringApplicationBuilder(RepositoryConfiguration.class)
+				.web(WebApplicationType.NONE)
+				.initializers(applicationContext ->
+						TestPropertyValues.of(database.springProperties()).applyTo(applicationContext))
+				.run();
+		users = context.getBean(HttpUserRepository.class);
+		mqtt = context.getBean(MqttIdentityRepository.class);
+		probes = context.getBean(IdentityConstraintProbeRepository.class);
 	}
 
 	@Configuration(proxyBeanMethods = false)
-	@EnableTransactionManagement
-	@Import({HttpUserRepository.class, MqttIdentityRepository.class})
+	@EnableAutoConfiguration
+	@EntityScan(basePackageClasses = HttpUserEntity.class)
+	@EnableJpaRepositories(basePackageClasses = SpringDataHttpUserRepository.class)
+	@Import({JpaHttpUserRepositoryAdapter.class, JpaMqttIdentityRepositoryAdapter.class})
 	static class RepositoryConfiguration {
-		@Bean
-		JdbcClient jdbcClient(DataSource dataSource) {
-			return JdbcClient.create(dataSource);
-		}
-
-		@Bean
-		PlatformTransactionManager transactionManager(DataSource dataSource) {
-			return new DataSourceTransactionManager(dataSource);
-		}
 	}
 }
