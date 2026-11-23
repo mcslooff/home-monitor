@@ -24,10 +24,26 @@ import org.eclipse.paho.client.mqttv3.MqttClient;
 import org.eclipse.paho.client.mqttv3.MqttConnectOptions;
 import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 class PackagedApplicationIT {
+
+	private static DatabaseFixture database;
+
+	@BeforeAll
+	static void startDatabase() {
+		database = DatabaseFixture.open();
+	}
+
+	@AfterAll
+	static void stopDatabase() {
+		if (database != null) {
+			database.close();
+		}
+	}
 
 	@TempDir
 	Path workingDirectory;
@@ -53,15 +69,8 @@ class PackagedApplicationIT {
 				.directory(workingDirectory.toFile())
 				.redirectErrorStream(true)
 				.redirectOutput(log.toFile());
-		// Keep developer/CI configuration and credentials out of this child application.
-		builder.environment().keySet().removeIf(key -> key.startsWith("SPRING_")
-				|| key.startsWith("MQTT_") || key.startsWith("CAMEL_")
-				|| key.startsWith("SERVER_") || key.startsWith("LOGGING_")
-				|| key.equals("JAVA_TOOL_OPTIONS") || key.equals("JDK_JAVA_OPTIONS")
-				|| key.equals("_JAVA_OPTIONS"));
-		// Also stay on loopback if argument forwarding regresses.
-		builder.environment().put("SERVER_ADDRESS", "127.0.0.1");
-		builder.environment().put("MQTT_BROKER_HOST", "127.0.0.1");
+		isolateEnvironment(builder);
+		database.configure(builder);
 
 		Process application = builder.start();
 		try {
@@ -128,6 +137,47 @@ class PackagedApplicationIT {
 		try (ServerSocket socket = new ServerSocket(mqttPort, 1, InetAddress.getByName("127.0.0.1"))) {
 			assertEquals(mqttPort, socket.getLocalPort());
 		}
+	}
+
+	@Test
+	@Timeout(45)
+	void databaseFailureStopsStartupBeforeMqttOrHttpAcceptConnections() throws Exception {
+		Path log = workingDirectory.resolve("database-failure.log");
+		ProcessBuilder builder = new ProcessBuilder(
+				Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+				"-jar", Path.of(System.getProperty("application.jar")).toAbsolutePath().toString(),
+				"--spring.config.location=classpath:/application.yml",
+				"--server.address=127.0.0.1", "--server.port=0",
+				"--mqtt.broker.host=127.0.0.1", "--mqtt.broker.port=0",
+				"--spring.datasource.url=jdbc:mariadb://127.0.0.1:1/unavailable?connectTimeout=1000",
+				"--spring.datasource.username=unavailable", "--spring.datasource.password=unavailable",
+				"--spring.datasource.hikari.connection-timeout=1000")
+				.directory(workingDirectory.toFile()).redirectErrorStream(true).redirectOutput(log.toFile());
+		isolateEnvironment(builder);
+		Process application = builder.start();
+		try {
+			assertTrue(application.waitFor(30, TimeUnit.SECONDS), () -> readLog(log));
+			assertTrue(application.exitValue() != 0, () -> readLog(log));
+			assertTrue(readLog(log).contains("APPLICATION FAILED") || readLog(log).contains("Application run failed"),
+					() -> readLog(log));
+			assertFalse(readLog(log).contains("Server bound to host="), () -> readLog(log));
+			assertFalse(readLog(log).contains("Tomcat started on port"), () -> readLog(log));
+		} finally {
+			application.destroyForcibly();
+			application.waitFor(5, TimeUnit.SECONDS);
+		}
+	}
+
+	private static void isolateEnvironment(ProcessBuilder builder) {
+		// Keep developer/CI configuration and credentials out of this child application.
+		builder.environment().keySet().removeIf(key -> key.startsWith("SPRING_")
+				|| key.startsWith("DB_") || key.startsWith("MQTT_") || key.startsWith("CAMEL_")
+				|| key.startsWith("SERVER_") || key.startsWith("LOGGING_")
+				|| key.equals("JAVA_TOOL_OPTIONS") || key.equals("JDK_JAVA_OPTIONS")
+				|| key.equals("_JAVA_OPTIONS"));
+		// Also stay on loopback if argument forwarding regresses.
+		builder.environment().put("SERVER_ADDRESS", "127.0.0.1");
+		builder.environment().put("MQTT_BROKER_HOST", "127.0.0.1");
 	}
 
 	private static int availablePort() throws IOException {

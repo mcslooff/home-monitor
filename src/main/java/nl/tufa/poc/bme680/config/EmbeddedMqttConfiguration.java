@@ -7,6 +7,7 @@ import io.moquette.broker.Server;
 import io.moquette.broker.config.MemoryConfig;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.sql.init.dependency.DependsOnDatabaseInitialization;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -14,6 +15,7 @@ import org.springframework.context.annotation.Configuration;
 public class EmbeddedMqttConfiguration {
 
     @Bean(name = "mqttBroker", destroyMethod = "stopServer")
+    @DependsOnDatabaseInitialization
     public Server mqttBroker(
             @Value("${mqtt.broker.host:127.0.0.1}") String host,
             @Value("${mqtt.broker.port:1883}") int port)
