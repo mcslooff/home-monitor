@@ -36,7 +36,24 @@ De `pom.xml` specificeert Java 21. Voor lokaal ontwikkelen heb je een JDK en Mav
 
 De instellingen staan in [application.yml](src/main/resources/application.yml). Met `MQTT_BROKER_URL` kun je Camel naar een andere broker laten verbinden.
 
-De huidige `pom.xml` verwijst voor de compilerinstellingen naar `${java.versio}`. Corrigeer beide verwijzingen naar `${java.version}` voordat je de POC bouwt. De applicatie-entrypoint is `nl.tufa.poc.bme680.App`.
+Bouw en verifieer de applicatie met Java 21 en Maven:
+
+```sh
+mvn -B verify
+java -jar target/bme680-0.0.1-SNAPSHOT.jar
+```
+
+`verify` voert ook de integratietest uit op de gebouwde JAR. Deze start de applicatie in een tijdelijke werkmap met lokale, geïsoleerde HTTP- en MQTT-poorten, controleert de MQTT-verwerking en stopt het proces na afloop. `mvn test` voert deze verpakte-applicatietest niet uit.
+
+De applicatie-entrypoint is `nl.tufa.poc.bme680.App`. Instellingen kunnen ook via command-line-argumenten worden overschreven, bijvoorbeeld voor uitsluitend lokale toegang:
+
+```sh
+java -jar target/bme680-0.0.1-SNAPSHOT.jar \
+  --server.address=127.0.0.1 --server.port=8181 \
+  --mqtt.broker.host=127.0.0.1 --mqtt.broker.port=1884
+```
+
+De POC bevat nog vaste HTTP-testaccounts en staat anonieme MQTT-verbindingen toe. Deze buildbasis verandert dat niet; stel de applicatie niet bloot aan een onvertrouwd netwerk. De beveiligingsaanpassingen volgen in roadmapstap 1.
 
 ## Roadmap
 

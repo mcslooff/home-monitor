@@ -13,10 +13,10 @@
 	</parent>
 
 	<properties>
-		<configuration-mainClass>nl.tufa.poc.bme680.App</configuration-mainClass>
+		<start-class>nl.tufa.poc.bme680.App</start-class>
 		<java.version>21</java.version>
-		<maven.compiler.source>${java.versio}</maven.compiler.source>
-		<maven.compiler.target>${java.versio}</maven.compiler.target>
+		<maven.compiler.source>${java.version}</maven.compiler.source>
+		<maven.compiler.target>${java.version}</maven.compiler.target>
 		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 		<camel.version>4.22.0</camel.version>
 	</properties>
@@ -79,14 +79,30 @@
 			<groupId>io.moquette</groupId>
 			<artifactId>moquette-broker</artifactId>
 			<version>0.17</version>
+			<exclusions>
+				<exclusion>
+					<groupId>org.slf4j</groupId>
+					<artifactId>slf4j-reload4j</artifactId>
+				</exclusion>
+			</exclusions>
+		</dependency>
+
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.security</groupId>
+			<artifactId>spring-security-test</artifactId>
+			<scope>test</scope>
 		</dependency>
 
 	</dependencies>
 
 	<build>
 		<plugins>
-			<!-- Compiler Plugin om te zorgen dat Java 17+ correct wordt
-			toegepast -->
+			<!-- Compileer met de Java-versie van het project. -->
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-compiler-plugin</artifactId>
@@ -99,26 +115,25 @@
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-shade-plugin</artifactId>
+				<!-- De Spring Boot-parent levert de Shade-executie en
+				transformers voor Spring-metadata en service providers. -->
+			</plugin>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-failsafe-plugin</artifactId>
 				<executions>
 					<execution>
-						<id>shade-my-jar</id> 
-						<phase>package</phase>
 						<goals>
-							<goal>shade</goal>
+							<goal>integration-test</goal>
+							<goal>verify</goal>
 						</goals>
-						<configuration>
-							<transformers>
-								<transformer
-									implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-									<mainClass>${configuration-mainClass}</mainClass>
-									<manifestEntries>
-										<Multi-Release>true</Multi-Release>
-									</manifestEntries>
-								</transformer>
-							</transformers>
-						</configuration>
 					</execution>
 				</executions>
+				<configuration>
+					<systemPropertyVariables>
+						<application.jar>${project.build.directory}/${project.build.finalName}.jar</application.jar>
+					</systemPropertyVariables>
+				</configuration>
 			</plugin>
 		</plugins>
 	</build>
