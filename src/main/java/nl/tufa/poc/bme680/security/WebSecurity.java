@@ -41,6 +41,11 @@ public class WebSecurity {
 						.requestMatchers(HttpMethod.POST, "/admin/users").hasRole("ADMIN")
 						.requestMatchers(HttpMethod.PUT, "/admin/users/*/roles",
 								"/admin/users/*/password", "/admin/users/*/enabled").hasRole("ADMIN")
+						.requestMatchers(HttpMethod.GET, "/admin/mqtt-identities").hasRole("ADMIN")
+						.requestMatchers(HttpMethod.POST, "/admin/mqtt-identities/devices",
+								"/admin/mqtt-identities/services",
+								"/admin/mqtt-identities/*/credentials").hasRole("ADMIN")
+						.requestMatchers(HttpMethod.PUT, "/admin/mqtt-identities/*/enabled").hasRole("ADMIN")
 						.anyRequest().denyAll())
 				.httpBasic(Customizer.withDefaults())
 				.sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS));
@@ -70,8 +75,12 @@ public class WebSecurity {
 			path = request.getRequestURI().substring(request.getContextPath().length());
 		}
 		boolean endpoint = ("POST".equals(request.getMethod())
-				&& ("/bme680".equals(path) || "/admin/users".equals(path)))
-				|| ("PUT".equals(request.getMethod()) && path.startsWith("/admin/users/"));
+				&& ("/bme680".equals(path) || "/admin/users".equals(path)
+						|| "/admin/mqtt-identities/devices".equals(path)
+						|| "/admin/mqtt-identities/services".equals(path)
+						|| path.matches("/admin/mqtt-identities/[^/]+/credentials")))
+				|| ("PUT".equals(request.getMethod())
+						&& (path.startsWith("/admin/users/") || path.startsWith("/admin/mqtt-identities/")));
 		if (!endpoint || request.getContentType() == null) {
 			return false;
 		}

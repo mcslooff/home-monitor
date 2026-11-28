@@ -25,6 +25,9 @@ mqtt:
     port: 1883
   topic: sensors/demo/measur
   client-id: ${MQTT_CLIENT_ID:camel-demo}
+  producer:
+    enabled: ${MQTT_PRODUCER_ENABLED:false}
+    topic: ${MQTT_PRODUCER_TOPIC:${mqtt.topic}}
 
 
 camel:

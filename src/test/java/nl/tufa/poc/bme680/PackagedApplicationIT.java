@@ -71,6 +71,7 @@ class PackagedApplicationIT {
 				"--mqtt.broker.host=127.0.0.1", "--mqtt.broker.port=" + mqttPort,
 				"--mqtt.client-id=packaged-" + UUID.randomUUID(),
 				"--mqtt.topic=sensors/test/measur",
+				"--mqtt.producer.enabled=true",
 				"--camel.component.paho.broker-url=" + brokerUrl)
 				.directory(workingDirectory.toFile())
 				.redirectErrorStream(true)
