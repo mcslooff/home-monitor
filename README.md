@@ -93,7 +93,7 @@ Er worden geen accounts, wachtwoorden of topicrechten door migraties aangemaakt.
 
 Wijzig nooit een toegepaste migratie. Voeg een nieuwe versie toe, maak vóór een migratie een databaseback-up en herstel bij een probleem een compatibele versie of pas een gecontroleerde forward-fix toe. MariaDB-DDL is niet als geheel transactioneel: een mislukte migratie kan gedeeltelijke tabellen achterlaten. Onderzoek en herstel die situatie voordat je Flyway opnieuw uitvoert; gebruik geen automatische `clean` of `repair` als herstelstrategie.
 
-HTTP-authenticatie gebruikt de opgeslagen gebruikers. Repositoryfouten worden doorgegeven, niet vertaald naar ontbrekende accounts of een permissieve fallback. MQTT-authenticatie gebruikt uitsluitend afzonderlijke MQTT-accounts; topicautorisatie volgt in ticket #6. Meetgegevens worden nog niet opgeslagen.
+HTTP-authenticatie gebruikt de opgeslagen gebruikers. Repositoryfouten worden doorgegeven, niet vertaald naar ontbrekende accounts of een permissieve fallback. MQTT-authenticatie gebruikt uitsluitend afzonderlijke MQTT-accounts; normale MQTT-publish- en subscribe-operaties controleren exacte opgeslagen grants. Zie hieronder de geaccepteerde brokerbeperkingen. Meetgegevens worden nog niet opgeslagen.
 
 ### Eerste beheerder en gebruikersbeheer
 
@@ -130,11 +130,11 @@ java -jar target/bme680-0.0.1-SNAPSHOT.jar \
   --mqtt.broker.host=127.0.0.1 --mqtt.broker.port=1884
 ```
 
-De MQTT-broker weigert anonieme verbindingen. **Topicrechten worden nog niet gehandhaafd (#6)**: stel de broker niet bloot aan een onvertrouwd netwerk. Tickets #5–#7 vormen één gecoördineerde uitrol; deploy deze authenticatiestap niet afzonderlijk op een operationele installatie.
+De MQTT-broker weigert anonieme verbindingen en controleert normale publish- en subscribe-operaties. **Uitsluitend bedoeld voor het private, vertrouwde netwerk van de eigenaar; niet publiek bereikbaar maken.** De eigenaar accepteert expliciet de hieronder beschreven Moquette-beperkingen. Dit is geen volledige topicisolatie. De operationele omschakeling vereist nog ticket #7.
 
 ### MQTT-accounts en topicrechten beheren
 
-Moquette 0.17 controleert actieve MQTT-accounts en BCrypt-hashes via zijn `IAuthenticator`-extensie. Ontbrekende, ongeldige of onjuist UTF-8-gecodeerde credentials en databasefouten worden geweigerd; HTTP-accounts geven geen MQTT-toegang. Topicrechten worden pas na ticket #6 gehandhaafd. De overgang van de bestaande gedeelde topic naar apparaatgebonden topics en payload-identiteitsbinding volgen in ticket #7. Verander operationele sensornodes nog niet zonder die gecoördineerde omschakeling.
+Moquette 0.17 controleert actieve MQTT-accounts en BCrypt-hashes via zijn `IAuthenticator`-extensie. Ontbrekende, ongeldige of onjuist UTF-8-gecodeerde credentials en databasefouten worden geweigerd; HTTP-accounts geven geen MQTT-toegang. De autorisatiepolicy controleert actuele accounts en exacte grants zonder permissiecache. De overgang van de bestaande gedeelde topic naar apparaatgebonden topics en payload-identiteitsbinding volgen in ticket #7. Verander operationele sensornodes nog niet zonder die gecoördineerde omschakeling.
 
 Alle onderstaande aanvragen vereisen HTTP Basic met de rol `ADMIN`. Mutaties vereisen `Content-Type: application/json`; dezelfde JSON/CSRF-regels als bij gebruikersbeheer gelden.
 
@@ -164,6 +164,16 @@ Een database-/commitfout tijdens deze operatie laat de listener uitgeschakeld. E
 
 Optionele Moquette-telemetrie is expliciet uitgeschakeld met `telemetry_enabled=false`; starten vereist geen `data/`-map en maakt geen telemetry-UUID-bestand. Authenticatieweigeringen worden zonder wachtwoorden/hashes gelogd.
 
+### Topiccontroles en geaccepteerde beperkingen
+
+Bij normale publish- en subscribe-aanvragen wordt de ingelogde MQTT-gebruikersnaam opnieuw opgezocht. Enabled-status, credentialgeneratie en een exact passende grant zijn vereist. DEVICE-accounts mogen uitsluitend publiceren op hun eigen `sensors/<deviceId>/measur` en niet subscriben, ook niet als er per ongeluk extra grants zijn opgeslagen. SERVICE-accounts hebben alleen de expliciete operatie per exact topic; geen beheerdersprivileges. Alleen concrete meettopics worden toegestaan, zonder wildcarduitbreiding, root-/systeemtopics of gedeelde subscriptions. Camel accepteert voor `mqtt.topic` eveneens uitsluitend één exact meettopic.
+
+Lookupfouten weigeren de normale operatie. Een succesvolle client-API-call of MQTT PUBACK is op zichzelf geen bewijs van toegestane aflevering; afhandeling en time-outs verschillen per QoS en clientbibliotheek. Retained replay via een nieuwe subscription vereist dat die exacte subscription wordt toegestaan.
+
+**Expliciet door de eigenaar geaccepteerd voor het private netwerk:** Moquette 0.17 roept deze policy niet aan voor last wills en controleert bestaande subscriptions niet opnieuw bij iedere aflevering. Een last will valt daardoor buiten deze topiccontrole. Het intrekken van alleen een read-grant (of een databasefout na het subscriben) stopt een bestaande subscription niet gegarandeerd; bestaande queues en retained delivery vormen evenmin een nieuwe autorisatiecheck. Gebruik de beheer-API om het account uit te schakelen/credentials te roteren als alle bestaande sessies moeten worden beëindigd: die operatie herstart de broker en wist de in-memory sessies. Dat maakt de will-beperking niet ongedaan.
+
+Er wordt geen Moquette-fork, dependencywijziging of aanvullende featureblokkade ingevoerd. De oorspronkelijke volledige-isolatiecriteria van #6 zijn daarmee niet allemaal afgedekt. Verificatie blijft op verzoek beperkt tot policy-only unittests en toegestane netwerkoperaties; er zijn geen nieuwe netwerktests voor de uitgesloten operaties.
+
 ### Optionele demo-publisher
 
 Zowel de Camel-consumer als `direct:publishMeasurement` zijn standaard gestopt. Zo kan een lege installatie beveiligd starten voor provisioning, zonder anonieme fallback. Schakel gewenste routes pas in nadat een apart SERVICE-account is aangemaakt.
@@ -179,7 +189,7 @@ Zowel de Camel-consumer als `direct:publishMeasurement` zijn standaard gestopt. 
 
 Als de publisher ingeschakeld is, krijgt een nieuw SERVICE-account aanvullend uitsluitend `PUBLISH` op het geconfigureerde producer-topic. Dat topic moet exact `sensors/<deviceId>/measur` zijn en verwijzen naar een al geprovisiond apparaat; anders wordt serviceprovisioning geweigerd. Provision daarom eerst het betreffende apparaat. Bij uitgeschakelde publisher krijgen nieuwe serviceaccounts geen publish-grant.
 
-Een configuratiewijziging herschrijft bestaande grants niet automatisch. Schakel een eerder serviceaccount uit en provision een nieuw, passend account als de publisherfunctie of het producer-topic verandert. Configureer SERVICE-credentials expliciet via een secret store/omgeving, niet in broncode of commandoregels. Na SERVICE-rotatie/uitschakelen moet de Camel-configuratie worden bijgewerkt en de applicatie opnieuw gestart; automatic reconnect met oude credentials blijft terecht geweigerd. Externe clients moeten dezelfde generatie-update uitvoeren. De huidige listener is plaintext MQTT: gebruik uitsluitend een geïsoleerd vertrouwd netwerk of een beveiligde TLS-transportlaag. Topic-/payloadbinding en de volledige apparaatomschakeling blijven #6/#7.
+Een configuratiewijziging herschrijft bestaande grants niet automatisch. Schakel een eerder serviceaccount uit en provision een nieuw, passend account als de publisherfunctie of het producer-topic verandert. Configureer SERVICE-credentials expliciet via een secret store/omgeving, niet in broncode of commandoregels. Na SERVICE-rotatie/uitschakelen moet de Camel-configuratie worden bijgewerkt en de applicatie opnieuw gestart; automatic reconnect met oude credentials blijft terecht geweigerd. Externe clients moeten dezelfde generatie-update uitvoeren. De huidige listener is plaintext MQTT: gebruik uitsluitend het private, vertrouwde netwerk; TLS kan het transport aanvullend beveiligen maar lost de geaccepteerde brokerbeperkingen niet op. Payloadbinding en de volledige apparaatomschakeling blijven #7.
 
 ## Roadmap
 

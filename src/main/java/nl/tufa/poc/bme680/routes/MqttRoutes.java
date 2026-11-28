@@ -7,6 +7,8 @@ import org.apache.camel.builder.RouteBuilder;
 import org.apache.camel.model.dataformat.JsonLibrary;
 import org.springframework.context.annotation.DependsOn;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Value;
+import nl.tufa.poc.bme680.identity.application.MqttAuthorizationService;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -20,9 +22,14 @@ import nl.tufa.poc.bme680.services.Bme680Service;
 public class MqttRoutes extends RouteBuilder {
 	
 	private final Bme680Service bme680Service;
+	@Value("${mqtt.topic}")
+	private String subscriptionTopic;
 	
     @Override
     public void configure() {
+        if (!MqttAuthorizationService.isMeasurementTopic(subscriptionTopic)) {
+            throw new IllegalArgumentException("mqtt.topic must be one exact sensors/<deviceId>/measur topic");
+        }
 
         // Consumer: receive MQTT payloads and log them.
         from("paho:{{mqtt.topic}}"

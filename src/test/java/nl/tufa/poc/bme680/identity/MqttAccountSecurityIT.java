@@ -55,6 +55,7 @@ import nl.tufa.poc.bme680.DatabaseFixture;
 import nl.tufa.poc.bme680.config.ManagedMqttBroker;
 import nl.tufa.poc.bme680.identity.application.IssuedMqttCredential;
 import nl.tufa.poc.bme680.identity.application.MqttAuthenticationService;
+import nl.tufa.poc.bme680.identity.application.MqttAuthorizationService;
 import nl.tufa.poc.bme680.identity.application.MqttBrokerUnavailableException;
 import nl.tufa.poc.bme680.identity.application.MqttAdministrationService;
 import nl.tufa.poc.bme680.identity.application.UserAdministrationService;
@@ -248,6 +249,37 @@ class MqttAccountSecurityIT {
 	}
 
 	@Test
+	void serviceReceivesPermittedDeviceMeasurementsAndAuthorizedRetainedReplay() throws Exception {
+		var device = device(prefix + "allowedDevice", prefix + "allowedDevice");
+		var backend = service(prefix + "allowedBackend");
+		String topic = device.identity().grants().getFirst().topic();
+		var received = new java.util.concurrent.LinkedBlockingQueue<String>();
+		try (var publisher = connect(mqttPort, device.identity().clientIds().getFirst(), device.identity().username(), device.secret());
+			 var observer = connect(mqttPort, backend.identity().clientIds().getFirst(), backend.identity().username(), backend.secret())) {
+			publisher.publish(topic, "measurement".getBytes(java.nio.charset.StandardCharsets.UTF_8), 1, true);
+			collectMessages(observer, received);
+			observer.subscribe(topic, 1);
+			assertEquals(topic + "=measurement", received.poll(5, TimeUnit.SECONDS));
+			publisher.publish(topic, "next-measurement".getBytes(java.nio.charset.StandardCharsets.UTF_8), 1, false);
+			assertEquals(topic + "=next-measurement", received.poll(5, TimeUnit.SECONDS));
+			identities.addGrant(new MqttGrant(backend.identity().id(), topic, Permission.PUBLISH));
+			observer.publish(topic, "explicit-service-grant".getBytes(java.nio.charset.StandardCharsets.UTF_8), 1, false);
+			assertEquals(topic + "=explicit-service-grant", received.poll(5, TimeUnit.SECONDS));
+			publisher.publish(topic, new byte[0], 1, true);
+		}
+	}
+
+	private static void collectMessages(MqttClient client, java.util.concurrent.BlockingQueue<String> received) {
+		client.setCallback(new org.eclipse.paho.client.mqttv3.MqttCallback() {
+			public void connectionLost(Throwable cause) { }
+			public void deliveryComplete(org.eclipse.paho.client.mqttv3.IMqttDeliveryToken token) { }
+			public void messageArrived(String topic, org.eclipse.paho.client.mqttv3.MqttMessage message) {
+				received.add(topic + "=" + new String(message.getPayload(), java.nio.charset.StandardCharsets.UTF_8));
+			}
+		});
+	}
+
+	@Test
 	void realBrokerRejectsAnonymousInvalidHttpOnlyAndCrossPrincipalCollisions(CapturedOutput output) throws Exception {
 		var device = device(prefix + "wire", prefix + "wire");
 		var other = device(prefix + "otherWire", prefix + "otherWire");
@@ -274,7 +306,7 @@ class MqttAccountSecurityIT {
 		var adminService = context.getBean(MqttAdministrationService.class);
 		try (var consumer = connect(mqttPort, service.identity().clientIds().getFirst(), service.identity().username(), service.secret());
 			 var producer = connect(mqttPort, service.identity().clientIds().getLast(), service.identity().username(), service.secret())) {
-			consumer.subscribe("sensors/+/measur", 1);
+			// This account has no devices yet in some test orders; session revocation needs no subscription.
 			var rotated = adminService.rotate(service.identity().id());
 			awaitDisconnected(consumer);
 			awaitDisconnected(producer);
@@ -319,7 +351,7 @@ class MqttAccountSecurityIT {
 		properties.setProperty("allow_anonymous", "false");
 		properties.setProperty("persistence_enabled", "false");
 		properties.setProperty("telemetry_enabled", "false");
-		var broker = new ManagedMqttBroker(properties, authentication);
+		var broker = new ManagedMqttBroker(properties, authentication, new MqttAuthorizationService(blocked));
 		try (var executor = Executors.newFixedThreadPool(2)) {
 			broker.start();
 			var connecting = executor.submit(() -> {
@@ -368,7 +400,7 @@ class MqttAccountSecurityIT {
 		properties.setProperty("allow_anonymous", "false");
 		properties.setProperty("persistence_enabled", "false");
 		properties.setProperty("telemetry_enabled", "false");
-		var broker = new ManagedMqttBroker(properties, authentication);
+		var broker = new ManagedMqttBroker(properties, authentication, new MqttAuthorizationService(identities));
 		java.util.concurrent.atomic.AtomicReference<ServerSocket> blocker = new java.util.concurrent.atomic.AtomicReference<>();
 		try {
 			broker.start();
@@ -417,7 +449,7 @@ class MqttAccountSecurityIT {
 		properties.setProperty("allow_anonymous", "false");
 		properties.setProperty("persistence_enabled", "false");
 		properties.setProperty("telemetry_enabled", "false");
-		var broker = new ManagedMqttBroker(properties, authentication);
+		var broker = new ManagedMqttBroker(properties, authentication, new MqttAuthorizationService(failing));
 		try {
 			broker.start();
 			try (var valid = connect(port, device.identity().clientIds().getFirst(), device.identity().username(), device.secret())) {

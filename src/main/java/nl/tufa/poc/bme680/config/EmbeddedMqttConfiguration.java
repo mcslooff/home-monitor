@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.util.Properties;
 
 import nl.tufa.poc.bme680.identity.application.MqttAuthenticationService;
+import nl.tufa.poc.bme680.identity.application.MqttAuthorizationService;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.sql.init.dependency.DependsOnDatabaseInitialization;
@@ -19,6 +20,7 @@ public class EmbeddedMqttConfiguration {
     @DependsOn("httpUserBootstrap")
     public ManagedMqttBroker mqttBroker(
             MqttAuthenticationService authentication,
+            MqttAuthorizationService authorization,
             @Value("${mqtt.broker.host:127.0.0.1}") String host,
             @Value("${mqtt.broker.port:1883}") int port)
             throws IOException {
@@ -33,7 +35,7 @@ public class EmbeddedMqttConfiguration {
         // In-memory storage for this demo.
         properties.setProperty("persistence_enabled", "false");
 
-        ManagedMqttBroker broker = new ManagedMqttBroker(properties, authentication);
+        ManagedMqttBroker broker = new ManagedMqttBroker(properties, authentication, authorization);
         broker.start();
 
         return broker;
