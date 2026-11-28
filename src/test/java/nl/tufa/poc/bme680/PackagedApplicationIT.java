@@ -32,6 +32,8 @@ import org.junit.jupiter.api.io.TempDir;
 class PackagedApplicationIT {
 
 	private static DatabaseFixture database;
+	private static final String BOOTSTRAP_USERNAME = "packaged-" + UUID.randomUUID();
+	private static final String BOOTSTRAP_PASSWORD = "test-" + UUID.randomUUID();
 
 	@BeforeAll
 	static void startDatabase() {
@@ -41,7 +43,11 @@ class PackagedApplicationIT {
 	@AfterAll
 	static void stopDatabase() {
 		if (database != null) {
-			database.close();
+			try {
+				database.removeHttpTestUser(BOOTSTRAP_USERNAME, BOOTSTRAP_PASSWORD);
+			} finally {
+				database.close();
+			}
 		}
 	}
 
@@ -71,6 +77,8 @@ class PackagedApplicationIT {
 				.redirectOutput(log.toFile());
 		isolateEnvironment(builder);
 		database.configure(builder);
+		builder.environment().put("BOOTSTRAP_ADMIN_USERNAME", BOOTSTRAP_USERNAME);
+		builder.environment().put("BOOTSTRAP_ADMIN_PASSWORD", BOOTSTRAP_PASSWORD);
 
 		Process application = builder.start();
 		try {
@@ -171,6 +179,7 @@ class PackagedApplicationIT {
 	private static void isolateEnvironment(ProcessBuilder builder) {
 		// Keep developer/CI configuration and credentials out of this child application.
 		builder.environment().keySet().removeIf(key -> key.startsWith("SPRING_")
+				|| key.startsWith("BOOTSTRAP_")
 				|| key.startsWith("DB_") || key.startsWith("MQTT_") || key.startsWith("CAMEL_")
 				|| key.startsWith("SERVER_") || key.startsWith("LOGGING_")
 				|| key.equals("JAVA_TOOL_OPTIONS") || key.equals("JDK_JAVA_OPTIONS")

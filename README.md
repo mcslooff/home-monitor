@@ -55,6 +55,8 @@ Maak vooraf een lege database en een eigen databaseaccount aan; de applicatie ma
 | `DB_URL` | MariaDB JDBC-URL, bijvoorbeeld `jdbc:mariadb://127.0.0.1:3306/home_monitor` |
 | `DB_USERNAME` | Eigen databaseaccount van de applicatie |
 | `DB_PASSWORD` | Wachtwoord van dat account; geen standaardwaarde |
+| `BOOTSTRAP_ADMIN_USERNAME` | Zelf gekozen beheerdernaam, alleen nodig bij een volledig lege gebruikerstabel |
+| `BOOTSTRAP_ADMIN_PASSWORD` | Uniek beheerderswachtwoord, alleen nodig bij de eerste initialisatie |
 
 Start daarna met:
 
@@ -77,10 +79,13 @@ De opslag volgt een naar binnen gerichte afhankelijkheidsstructuur:
 ```text
 identity/domain/model                Frameworkvrije domeinmodellen
 identity/domain/port                 Repositoryinterfaces voor opslag en ophalen
+identity/application                 Frameworkvrije gebruikersbeheer-use-cases en veilige uitvoermodellen
+identity/application/port            Grenzen voor hashing en exclusieve beheertransacties
 identity/infrastructure/persistence   JPA-entiteiten, Spring Data-repositories en adapters
+identity/infrastructure/web           Gevalideerde HTTP-requestmodellen, controllers en foutafhandeling
 ```
 
-Toekomstige applicatielogica gebruikt de domeininterfaces, niet de JPA-entiteiten of Spring Data-repositories. De adapters vertalen tussen domeinmodellen en database-entiteiten en begrenzen transacties. Spring Data genereert de opslag- en zoekqueries met gebonden parameters; er staan geen SQL-strings in de productie-Java-code. Eventuele maatwerkqueries horen als `@Query` op een Spring Data-repository. Alleen de testrepositories hebben native `@Query`-probes om databaseconstraints onafhankelijk van Java-validatie te controleren. De tests bewaken ook dat het domein niet van Spring, JPA of infrastructuur afhankelijk is.
+Applicatielogica gebruikt de domeininterfaces, niet de JPA-entiteiten of Spring Data-repositories. De adapters vertalen tussen domeinmodellen en database-entiteiten en begrenzen transacties. Spring Data genereert de opslag- en zoekqueries met gebonden parameters; maatwerkqueries staan uitsluitend als `@Query` op Spring Data-repositories. Alleen de testrepositories hebben native `@Query`-probes om databaseconstraints onafhankelijk van Java-validatie te controleren. De tests bewaken dat domein en applicatielogica niet van Spring, JPA of infrastructuur afhankelijk zijn.
 
 Flyway blijft als enige verantwoordelijk voor schemawijzigingen. Hibernate valideert uitsluitend de entiteitmapping tegen het bestaande schema (`ddl-auto: validate`) en wijzigt geen tabellen; `open-in-view` is uitgeschakeld.
 
@@ -88,7 +93,34 @@ Er worden geen accounts, wachtwoorden of topicrechten door migraties aangemaakt.
 
 Wijzig nooit een toegepaste migratie. Voeg een nieuwe versie toe, maak vóór een migratie een databaseback-up en herstel bij een probleem een compatibele versie of pas een gecontroleerde forward-fix toe. MariaDB-DDL is niet als geheel transactioneel: een mislukte migratie kan gedeeltelijke tabellen achterlaten. Onderzoek en herstel die situatie voordat je Flyway opnieuw uitvoert; gebruik geen automatische `clean` of `repair` als herstelstrategie.
 
-Deze stap legt alleen de opslagbasis. HTTP gebruikt tot ticket #3 nog de bestaande POC-testaccounts; MQTT-authenticatie en topicautorisatie volgen in tickets #5 en #6. Repositoryfouten worden doorgegeven, niet vertaald naar een permissieve fallback. Dit is nog geen databasegestuurde runtime-authenticatie en bevat geen meetgegevensopslag.
+HTTP-authenticatie gebruikt de opgeslagen gebruikers. Repositoryfouten worden doorgegeven, niet vertaald naar ontbrekende accounts of een permissieve fallback. MQTT-authenticatie en topicautorisatie volgen in tickets #5 en #6; meetgegevens worden nog niet opgeslagen.
+
+### Eerste beheerder en gebruikersbeheer
+
+Bij de eerste start met een lege gebruikerstabel moet de operator `BOOTSTRAP_ADMIN_USERNAME` en `BOOTSTRAP_ADMIN_PASSWORD` via de secretconfiguratie aanbieden. Er bestaat geen standaardaccount en geen publiek bootstrapendpoint. Namen bevatten 1–64 ASCII-tekens uit `A-Z`, `a-z`, `0-9`, `_`, `.`, `@` en `-`. Wachtwoorden hebben minimaal 12 tekens en maximaal 72 UTF-8-bytes, passend bij BCrypt.
+
+De initialisatie maakt precies één actieve `ADMIN` aan en wordt vóór beschikbaarheid van HTTP en MQTT uitgevoerd. Zodra er gebruikers bestaan, worden bootstrapcredentials genegeerd: opnieuw starten wijzigt geen accounts of wachtwoorden. Verwijder de bootstrapsecret na de eerste start uit de configuratie. Een niet-lege database zonder actieve beheerder wordt niet automatisch hersteld met een nieuw account; opstarten faalt en vereist een beperkte operatorherstelactie of een bekende, compatibele back-up. Een beheerder kan wachtwoorden van bestaande accounts via de beheer-API herstellen.
+
+Alle HTTP-aanvragen gebruiken Basic-authenticatie. Er worden geen authenticatiesessies of tokens opgeslagen. Ontbrekende, onjuiste en uitgeschakelde credentials leveren bij geldige JSON-API-aanvragen `401` op; onvoldoende rechten leveren `403` op.
+
+| Aanvraag | Vereiste rol | JSON-inhoud |
+| --- | --- | --- |
+| `POST /bme680` | `SENSOR` | Bestaand meetgegevensformaat |
+| `GET /admin/users` | `ADMIN` | Geen; retourneert alleen ID, naam, actieve status en rollen |
+| `POST /admin/users` | `ADMIN` | `username`, `password`, `enabled` en niet-lege `roles` |
+| `PUT /admin/users/{id}/roles` | `ADMIN` | `{"roles":["USER"]}` |
+| `PUT /admin/users/{id}/password` | `ADMIN` | `password`; bij succes `204`, geen responsbody |
+| `PUT /admin/users/{id}/enabled` | `ADMIN` | `{"enabled":false}` |
+
+Rollen zijn `USER`, `ADMIN` en `SENSOR`; meerdere rollen kunnen expliciet worden toegekend. `ADMIN` geeft niet automatisch toegang tot ingestie en `USER` geeft geen impliciete beheer- of ingestietoegang. Niet-genoemde API-mogelijkheden zijn standaard geblokkeerd, inclusief geneste `/bme680/...`-paden. MQTT-accounts kunnen zich niet als HTTP-gebruiker aanmelden. MQTT-beheerendpoints worden pas in ticket #4 toegevoegd.
+
+Alle mutaties vereisen `Content-Type: application/json` en een gevalideerde JSON-body. Verplicht ontbrekende of ongeldige velden leveren `400` op; een bestaande gebruikersnaam of verwijderen van de laatste actieve beheerder geeft `409`; een onbekende gebruikers-ID geeft `404`. Gebruikersnamen zijn niet wijzigbaar. Aanmaken geeft `201` met uitsluitend veilige accountmetadata terug. Wachtwoorden en hashes worden nooit teruggestuurd of als requestdiagnostiek gelogd.
+
+Rolwijzigingen, wachtwoordresets en uitschakelen gelden voor de volgende aanvraag; gebruikersgegevens worden niet gecachet. Alle gebruikersmutaties en bootstrap delen een transactionele database-rijlock (`V2__serialize_user_administration.sql`), zodat ook twee applicatie-instanties niet gelijktijdig de laatste actieve beheerder kunnen uitschakelen of diens beheerrol verwijderen. Het runtime-databaseaccount heeft ook `SELECT`/`UPDATE` op `user_administration_lock` nodig.
+
+**CSRF-keuze:** Basic-credentials kunnen door browsers automatisch worden meegestuurd; statelessness is daarom geen reden om CSRF uit te schakelen. De CSRF-filter blijft actief voor eenvoudige browseraanvragen zoals formulieren en `text/plain`. Alleen de genoemde JSON-mutaties zijn uitgezonderd: `application/json` is geen CORS-safelisted content type en cross-origin browseraanvragen vereisen een preflight. De applicatie staat geen cross-origin toegang toe. Voeg niet zonder herbeoordeling CORS-toestemming, alternatieve eenvoudige contenttypes of muterende GET/DELETE-endpoints toe. De bestaande JSON-sensorclients hebben hierdoor geen nieuw CSRF-token nodig.
+
+**Overstap vanaf de POC:** de drie vaste HTTP-testaccounts zijn verwijderd. Beschouw alle eerder ingecheckte wachtwoorden als gecompromitteerd; hergebruik ze niet voor nieuwe accounts. Initialiseer de beheerder en maak vóór omschakelen van HTTP-clients nieuwe accounts met de vereiste rollen aan. HTTP Basic beveiligt het transport niet: gebruik HTTPS (eventueel via een reverse proxy) buiten een expliciet vertrouwd, geïsoleerd netwerk.
 
 De applicatie-entrypoint is `nl.tufa.poc.bme680.App`. Instellingen kunnen ook via command-line-argumenten worden overschreven, bijvoorbeeld voor uitsluitend lokale toegang:
 
@@ -98,7 +130,7 @@ java -jar target/bme680-0.0.1-SNAPSHOT.jar \
   --mqtt.broker.host=127.0.0.1 --mqtt.broker.port=1884
 ```
 
-De POC bevat nog vaste HTTP-testaccounts en staat anonieme MQTT-verbindingen toe. Deze buildbasis verandert dat niet; stel de applicatie niet bloot aan een onvertrouwd netwerk. De beveiligingsaanpassingen volgen in roadmapstap 1.
+De MQTT-broker staat voorlopig nog anonieme verbindingen toe. Stel deze niet bloot aan een onvertrouwd netwerk; brokerbeveiliging volgt in tickets #5 en #6.
 
 ## Roadmap
 
