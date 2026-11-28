@@ -11,9 +11,16 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 import nl.tufa.poc.bme680.identity.application.MqttManagementException;
+import nl.tufa.poc.bme680.identity.application.MqttBrokerUnavailableException;
 
 @RestControllerAdvice(assignableTypes = MqttAdministrationController.class)
 public class MqttAdministrationErrors {
+	@ExceptionHandler(MqttBrokerUnavailableException.class)
+	ResponseEntity<Error> brokerUnavailable() {
+		return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+				.body(new Error("MQTT broker is unavailable; recover it and rotate credentials again"));
+	}
+
 	public record Error(String message) {
 	}
 

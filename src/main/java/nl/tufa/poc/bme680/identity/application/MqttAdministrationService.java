@@ -10,6 +10,7 @@ import java.util.regex.Pattern;
 
 import nl.tufa.poc.bme680.identity.application.port.MqttAdministrationTransaction;
 import nl.tufa.poc.bme680.identity.application.port.MqttSecretGenerator;
+import nl.tufa.poc.bme680.identity.application.port.MqttSessionBarrier;
 import nl.tufa.poc.bme680.identity.application.port.PasswordHasher;
 import nl.tufa.poc.bme680.identity.domain.model.MqttGrant;
 import nl.tufa.poc.bme680.identity.domain.model.MqttGrant.Permission;
@@ -24,14 +25,17 @@ public class MqttAdministrationService {
 	private final MqttSecretGenerator secrets;
 	private final MqttAdministrationTransaction transaction;
 	private final Optional<String> producerTopic;
+	private final MqttSessionBarrier sessions;
 
 	public MqttAdministrationService(MqttIdentityRepository identities, PasswordHasher passwords,
-			MqttSecretGenerator secrets, MqttAdministrationTransaction transaction, Optional<String> producerTopic) {
+			MqttSecretGenerator secrets, MqttAdministrationTransaction transaction, Optional<String> producerTopic,
+			MqttSessionBarrier sessions) {
 		this.identities = identities;
 		this.passwords = passwords;
 		this.secrets = secrets;
 		this.transaction = transaction;
 		this.producerTopic = producerTopic;
+		this.sessions = sessions;
 	}
 
 	public IssuedMqttCredential createDevice(String username, String deviceId) {
@@ -86,24 +90,26 @@ public class MqttAdministrationService {
 	}
 
 	public IssuedMqttCredential rotate(long id) {
-		return transaction.execute(() -> {
+		requireIdentity(id);
+		return sessions.withDisconnectedSessions(() -> transaction.execute(() -> {
 			var identity = requireIdentity(id);
 			String secret = newSecret();
 			var updated = identities.save(new MqttIdentity(identity.id(), identity.username(), passwords.hash(secret),
-					identity.enabled(), identity.kind(), identity.deviceId()));
-			// Broker session termination is integrated in roadmap ticket #5.
+					identity.enabled(), identity.kind(), identity.deviceId(), Math.incrementExact(identity.credentialGeneration())));
 			return new IssuedMqttCredential(summary(updated), secret);
-		});
+		}));
 	}
 
 	public MqttIdentitySummary setEnabled(long id, boolean enabled) {
-		return transaction.execute(() -> {
+		requireIdentity(id);
+		java.util.function.Supplier<MqttIdentitySummary> change = () -> transaction.execute(() -> {
 			var identity = requireIdentity(id);
 			var updated = identities.save(new MqttIdentity(identity.id(), identity.username(), identity.passwordHash(),
-					enabled, identity.kind(), identity.deviceId()));
-			// Persisted state only until broker authentication/revocation in ticket #5.
+					enabled, identity.kind(), identity.deviceId(),
+					enabled ? identity.credentialGeneration() : Math.incrementExact(identity.credentialGeneration())));
 			return summary(updated);
 		});
+		return enabled ? change.get() : sessions.withDisconnectedSessions(change);
 	}
 
 	private MqttIdentity requireIdentity(long id) {

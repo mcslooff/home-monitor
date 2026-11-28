@@ -23,12 +23,12 @@ final class IdentityPersistenceMapper {
 
 	static MqttIdentityEntity toEntity(MqttIdentity identity) {
 		return new MqttIdentityEntity(identity.id(), identity.username(), identity.passwordHash().encoded(),
-				identity.enabled(), identity.kind(), identity.deviceId());
+				identity.enabled(), identity.kind(), identity.deviceId(), identity.credentialGeneration());
 	}
 
 	static MqttIdentity toDomain(MqttIdentityEntity identity) {
 		return new MqttIdentity(identity.getId(), identity.getUsername(), new PasswordHash(identity.getPasswordHash()),
-				identity.isEnabled(), identity.getKind(), identity.getDeviceId());
+				identity.isEnabled(), identity.getKind(), identity.getDeviceId(), identity.getCredentialGeneration());
 	}
 
 	static MqttGrantEntity toEntity(MqttGrant grant) {

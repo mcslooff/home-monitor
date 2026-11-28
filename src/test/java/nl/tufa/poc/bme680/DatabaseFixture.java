@@ -90,6 +90,18 @@ public final class DatabaseFixture implements AutoCloseable {
 		}
 	}
 
+	public void removeMqttTestIdentities(String prefix) {
+		if (container != null) {
+			return;
+		}
+		try (var context = new SpringApplicationBuilder(CleanupConfiguration.class).web(WebApplicationType.NONE)
+				.initializers(application -> TestPropertyValues.of(springProperties()).applyTo(application)).run()) {
+			var probes = context.getBean(nl.tufa.poc.bme680.identity.infrastructure.persistence.IdentityConstraintProbeRepository.class);
+			probes.deleteGrants(prefix + "%");
+			probes.deleteMqttIdentities(prefix + "%");
+		}
+	}
+
 	@TestConfiguration(proxyBeanMethods = false)
 	@EnableAutoConfiguration
 	@EntityScan(basePackageClasses = HttpUserEntity.class)

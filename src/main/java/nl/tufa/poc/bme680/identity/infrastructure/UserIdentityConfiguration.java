@@ -9,12 +9,18 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 
 import nl.tufa.poc.bme680.identity.application.UserAdministrationService;
 import nl.tufa.poc.bme680.identity.application.port.PasswordHasher;
+import nl.tufa.poc.bme680.identity.application.port.PasswordVerifier;
 import nl.tufa.poc.bme680.identity.application.port.UserAdministrationTransaction;
 import nl.tufa.poc.bme680.identity.domain.model.PasswordHash;
 import nl.tufa.poc.bme680.identity.domain.port.HttpUserRepository;
 
 @Configuration(proxyBeanMethods = false)
 public class UserIdentityConfiguration {
+	@Bean
+	PasswordVerifier identityPasswordVerifier(PasswordEncoder encoder) {
+		return (raw, hash) -> encoder.matches(raw, hash.encoded());
+	}
+
 	@Bean
 	PasswordHasher identityPasswordHasher(PasswordEncoder encoder) {
 		return raw -> new PasswordHash(encoder.encode(raw));

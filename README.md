@@ -93,7 +93,7 @@ Er worden geen accounts, wachtwoorden of topicrechten door migraties aangemaakt.
 
 Wijzig nooit een toegepaste migratie. Voeg een nieuwe versie toe, maak vóór een migratie een databaseback-up en herstel bij een probleem een compatibele versie of pas een gecontroleerde forward-fix toe. MariaDB-DDL is niet als geheel transactioneel: een mislukte migratie kan gedeeltelijke tabellen achterlaten. Onderzoek en herstel die situatie voordat je Flyway opnieuw uitvoert; gebruik geen automatische `clean` of `repair` als herstelstrategie.
 
-HTTP-authenticatie gebruikt de opgeslagen gebruikers. Repositoryfouten worden doorgegeven, niet vertaald naar ontbrekende accounts of een permissieve fallback. MQTT-authenticatie en topicautorisatie volgen in tickets #5 en #6; meetgegevens worden nog niet opgeslagen.
+HTTP-authenticatie gebruikt de opgeslagen gebruikers. Repositoryfouten worden doorgegeven, niet vertaald naar ontbrekende accounts of een permissieve fallback. MQTT-authenticatie gebruikt uitsluitend afzonderlijke MQTT-accounts; topicautorisatie volgt in ticket #6. Meetgegevens worden nog niet opgeslagen.
 
 ### Eerste beheerder en gebruikersbeheer
 
@@ -130,11 +130,11 @@ java -jar target/bme680-0.0.1-SNAPSHOT.jar \
   --mqtt.broker.host=127.0.0.1 --mqtt.broker.port=1884
 ```
 
-De MQTT-broker staat voorlopig nog anonieme verbindingen toe. Stel deze niet bloot aan een onvertrouwd netwerk; brokerbeveiliging volgt in tickets #5 en #6.
+De MQTT-broker weigert anonieme verbindingen. **Topicrechten worden nog niet gehandhaafd (#6)**: stel de broker niet bloot aan een onvertrouwd netwerk. Tickets #5–#7 vormen één gecoördineerde uitrol; deploy deze authenticatiestap niet afzonderlijk op een operationele installatie.
 
 ### MQTT-accounts en topicrechten beheren
 
-**Dit is provisioning, nog geen brokerbeveiliging.** De beheer-API bewaart accounts, hashes en rechten, maar Moquette controleert deze gegevens pas na ticket #5 en handhaaft topics pas na ticket #6. Camel-credentials en de overgang van de bestaande gedeelde topic naar apparaatgebonden topics volgen in ticket #7. Verander operationele sensornodes nog niet zonder die gecoördineerde omschakeling.
+Moquette 0.17 controleert actieve MQTT-accounts en BCrypt-hashes via zijn `IAuthenticator`-extensie. Ontbrekende, ongeldige of onjuist UTF-8-gecodeerde credentials en databasefouten worden geweigerd; HTTP-accounts geven geen MQTT-toegang. Topicrechten worden pas na ticket #6 gehandhaafd. De overgang van de bestaande gedeelde topic naar apparaatgebonden topics en payload-identiteitsbinding volgen in ticket #7. Verander operationele sensornodes nog niet zonder die gecoördineerde omschakeling.
 
 Alle onderstaande aanvragen vereisen HTTP Basic met de rol `ADMIN`. Mutaties vereisen `Content-Type: application/json`; dezelfde JSON/CSRF-regels als bij gebruikersbeheer gelden.
 
@@ -156,20 +156,30 @@ Secrets worden server-side gemaakt met 32 cryptografisch willekeurige bytes (256
 
 Rotatie vervangt de hash atomair en bewaart apparaat-ID, grants en enabled-status; een uitgeschakeld account wordt daardoor niet opnieuw ingeschakeld. De oude secret matcht daarna niet meer met de opgeslagen hash. De enabled-status wordt eveneens persistent bijgewerkt.
 
-**Vereist lifecyclecontract voor ticket #5:** uitschakelen en rotatie moeten naast de databasewijziging alle bestaande MQTT-sessies van de betreffende principal beëindigen, ook bij meerdere client-ID's. Oude credentials mogen niet opnieuw verbinden. De brokerintegratie moet voorkomen dat fouten bij revocatie oude permissieve sessies achterlaten; alleen een controle tijdens een volgende CONNECT is onvoldoende. Deze live-sessiegarantie is in deze provisioningstap nadrukkelijk nog niet actief.
+**Client-ID en credentialgeneratie:** metadata bevat `credentialGeneration` en aanbevolen `clientIds`. Een DEVICE gebruikt exact `<username>:v<generation>`; een SERVICE mag bovendien een suffix `:<connection>` gebruiken (1–32 tekens uit letters, cijfers, `_` en `-`), zoals `backend:v1:consumer` en `backend:v1:producer`. De broker controleert gebruikersnaam, generatie, accounttype én wachtwoord vóór sessieovername. Een client-ID is geen authenticatiemiddel. Flyway V4 voegt de persistente generatie toe; bestaande accounts beginnen bij 1.
+
+**Revocatie met brokerbrede herstart:** rotatie en uitschakelen sluiten eerst brokeradmissie en stoppen de ingebouwde broker, inclusief alle verbindingen, subscriptions en in-memory wachtrijen. Daarna commit de databasewijziging en start een nieuwe broker. Ook niet-betrokken clients moeten opnieuw verbinden en subscriben; verwacht kortstondig verlies van beschikbaarheid en mogelijk berichtenverlies (geen duurzame sessies/opslag). Zowel rotatie als uitschakelen verhogen de generatie; opnieuw inschakelen maakt een oude client-ID niet geldig. Rotatie vereist de nieuwe secret én client-ID.
+
+Een database-/commitfout tijdens deze operatie laat de listener uitgeschakeld. Een mislukte brokerherstart geeft `503`; de credentialwijziging kan dan al gecommit zijn en de eenmalige secret is niet uitleesbaar. Herstel database/poort/configuratie en herhaal een rotatie of herstart de applicatie; roteer opnieuw als een secret niet ontvangen is. Er is nooit een anonieme fallback. Onbekende account-ID's worden vóór de herstart afgewezen. Meerdere applicatiereplica's en directe databasewijzigingen zijn niet ondersteund: beheer loopt via deze API op de ene ingebouwde broker.
+
+Optionele Moquette-telemetrie is expliciet uitgeschakeld met `telemetry_enabled=false`; starten vereist geen `data/`-map en maakt geen telemetry-UUID-bestand. Authenticatieweigeringen worden zonder wachtwoorden/hashes gelogd.
 
 ### Optionele demo-publisher
 
-De Camel-route `direct:publishMeasurement` is nu standaard gestopt; normale MQTT-consumptie blijft ongewijzigd. Dit voorkomt dat een backendaccount onnodig publish-rechten nodig heeft.
+Zowel de Camel-consumer als `direct:publishMeasurement` zijn standaard gestopt. Zo kan een lege installatie beveiligd starten voor provisioning, zonder anonieme fallback. Schakel gewenste routes pas in nadat een apart SERVICE-account is aangemaakt.
 
 | Variabele | Standaard | Betekenis |
 | --- | --- | --- |
+| `MQTT_CONSUMER_ENABLED` | `false` | Expliciet starten van MQTT-ingestie |
+| `MQTT_USERNAME` | Leeg | Gebruikersnaam van het SERVICE-account voor Camel |
+| `MQTT_PASSWORD` | Leeg | Eenmalig verkregen SERVICE-secret |
+| `MQTT_CLIENT_ID` | `unconfigured:v1` | Actuele basis-ID uit metadata, bijvoorbeeld `backend:v1`; Camel voegt `:consumer`/`:producer` toe |
 | `MQTT_PRODUCER_ENABLED` | `false` | Expliciet starten van de demo-publisher |
 | `MQTT_PRODUCER_TOPIC` | Huidige `mqtt.topic` | Eén concreet publish-topic |
 
 Als de publisher ingeschakeld is, krijgt een nieuw SERVICE-account aanvullend uitsluitend `PUBLISH` op het geconfigureerde producer-topic. Dat topic moet exact `sensors/<deviceId>/measur` zijn en verwijzen naar een al geprovisiond apparaat; anders wordt serviceprovisioning geweigerd. Provision daarom eerst het betreffende apparaat. Bij uitgeschakelde publisher krijgen nieuwe serviceaccounts geen publish-grant.
 
-Een configuratiewijziging herschrijft bestaande grants niet automatisch. Schakel een eerder serviceaccount uit en provision een nieuw, passend account als de publisherfunctie of het producer-topic verandert. Er worden geen MQTT-servicecredentials automatisch in Camel ingesteld; die integratie blijft ticket #7.
+Een configuratiewijziging herschrijft bestaande grants niet automatisch. Schakel een eerder serviceaccount uit en provision een nieuw, passend account als de publisherfunctie of het producer-topic verandert. Configureer SERVICE-credentials expliciet via een secret store/omgeving, niet in broncode of commandoregels. Na SERVICE-rotatie/uitschakelen moet de Camel-configuratie worden bijgewerkt en de applicatie opnieuw gestart; automatic reconnect met oude credentials blijft terecht geweigerd. Externe clients moeten dezelfde generatie-update uitvoeren. De huidige listener is plaintext MQTT: gebruik uitsluitend een geïsoleerd vertrouwd netwerk of een beveiligde TLS-transportlaag. Topic-/payloadbinding en de volledige apparaatomschakeling blijven #6/#7.
 
 ## Roadmap
 

@@ -44,4 +44,7 @@ public class MqttIdentityEntity {
 
 	@Column(name = "device_id", length = 64)
 	private String deviceId;
+
+	@Column(name = "credential_generation", nullable = false)
+	private long credentialGeneration;
 }

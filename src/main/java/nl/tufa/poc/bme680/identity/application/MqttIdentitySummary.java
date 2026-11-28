@@ -5,16 +5,18 @@ import java.util.List;
 import nl.tufa.poc.bme680.identity.domain.model.MqttGrant;
 import nl.tufa.poc.bme680.identity.domain.model.MqttIdentity;
 import nl.tufa.poc.bme680.identity.domain.model.MqttIdentity.Kind;
+import nl.tufa.poc.bme680.identity.domain.model.MqttClientId;
 
 /** Safe metadata: neither the password hash nor the issued secret belongs here. */
 public record MqttIdentitySummary(long id, String username, boolean enabled, Kind kind,
-		String deviceId, List<MqttGrant> grants) {
+		String deviceId, List<MqttGrant> grants, long credentialGeneration, List<String> clientIds) {
 	public MqttIdentitySummary {
 		grants = List.copyOf(grants);
+		clientIds = List.copyOf(clientIds);
 	}
 
 	static MqttIdentitySummary from(MqttIdentity identity, List<MqttGrant> grants) {
 		return new MqttIdentitySummary(identity.id(), identity.username(), identity.enabled(),
-				identity.kind(), identity.deviceId(), grants);
+				identity.kind(), identity.deviceId(), grants, identity.credentialGeneration(), MqttClientId.recommended(identity));
 	}
 }

@@ -99,6 +99,10 @@ class MqttAdministrationServiceTest {
 					public <T> T execute(Supplier<T> work) {
 						return work.get();
 					}
-				}, producerTopic);
+				}, producerTopic, new nl.tufa.poc.bme680.identity.application.port.MqttSessionBarrier() {
+					public <T> T withDisconnectedSessions(Supplier<T> change) {
+						return change.get();
+					}
+				});
 	}
 }
