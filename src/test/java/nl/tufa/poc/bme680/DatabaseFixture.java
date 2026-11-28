@@ -6,7 +6,18 @@ import javax.sql.DataSource;
 
 import org.flywaydb.core.Flyway;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.boot.WebApplicationType;
+import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
+import org.springframework.boot.builder.SpringApplicationBuilder;
+import org.springframework.boot.persistence.autoconfigure.EntityScan;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.boot.test.util.TestPropertyValues;
+import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
+import org.springframework.security.crypto.factory.PasswordEncoderFactories;
 import org.testcontainers.mariadb.MariaDBContainer;
+
+import nl.tufa.poc.bme680.identity.infrastructure.persistence.HttpUserEntity;
+import nl.tufa.poc.bme680.identity.infrastructure.persistence.SpringDataHttpUserRepository;
 
 /**
  * Uses a disposable container by default. An explicitly supplied, dedicated test
@@ -60,6 +71,30 @@ public final class DatabaseFixture implements AutoCloseable {
 		builder.environment().put("DB_URL", url);
 		builder.environment().put("DB_USERNAME", username);
 		builder.environment().put("DB_PASSWORD", password);
+	}
+
+	public void removeHttpTestUser(String username, String password) {
+		if (container != null) {
+			return; // The disposable database will be removed in close().
+		}
+		// The packaged process cannot share a transaction with its parent test.
+		// Remove only its generated account, after verifying ownership by password.
+		try (var context = new SpringApplicationBuilder(CleanupConfiguration.class).web(WebApplicationType.NONE)
+				.initializers(application -> TestPropertyValues.of(springProperties()).applyTo(application)).run()) {
+			var users = context.getBean(SpringDataHttpUserRepository.class);
+			users.findByUsername(username).ifPresent(user -> {
+				if (PasswordEncoderFactories.createDelegatingPasswordEncoder().matches(password, user.getPasswordHash())) {
+					users.deleteById(user.getId());
+				}
+			});
+		}
+	}
+
+	@TestConfiguration(proxyBeanMethods = false)
+	@EnableAutoConfiguration
+	@EntityScan(basePackageClasses = HttpUserEntity.class)
+	@EnableJpaRepositories(basePackageClasses = SpringDataHttpUserRepository.class)
+	static class CleanupConfiguration {
 	}
 
 	private static String requiredEnvironment(String name) {

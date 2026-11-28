@@ -24,7 +24,7 @@ public class Bme680Controller {
 
 	private final Bme680Service bme680Service;
 	
-	@PostMapping("/bme680")
+	@PostMapping(value = "/bme680", consumes = "application/json")
 	public ResponseEntity<String> receiveMeasurement(@RequestBody @Valid Bme680MeasurementDto value,
 			BindingResult bindingResult) {
 

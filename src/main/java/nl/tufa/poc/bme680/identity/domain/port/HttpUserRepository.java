@@ -1,6 +1,7 @@
 package nl.tufa.poc.bme680.identity.domain.port;
 
 import java.util.Optional;
+import java.util.List;
 
 import nl.tufa.poc.bme680.identity.domain.model.HttpUser;
 
@@ -12,4 +13,12 @@ public interface HttpUserRepository {
 	HttpUser save(HttpUser user);
 
 	Optional<HttpUser> findByUsername(String username);
+
+	Optional<HttpUser> findById(long id);
+
+	List<HttpUser> findAll();
+
+	long count();
+
+	long countEnabledAdministrators();
 }
