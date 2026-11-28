@@ -199,16 +199,16 @@ class IdentityStoreIT {
 
 	@Test
 	void repositoryConnectionErrorsPropagateInsteadOfLookingLikeMissingAccounts() {
-		// Exercise the real JPA adapters with a database credential that cannot log in.
+		// Exercise the real JPA adapters with a deterministically unavailable pool.
+		// Updating credentials + soft eviction can race with background connection creation.
 		database.flyway().validate();
 		var dataSource = context.getBean(com.zaxxer.hikari.HikariDataSource.class);
-		dataSource.getHikariConfigMXBean().setPassword("invalid-" + UUID.randomUUID());
-		dataSource.getHikariPoolMXBean().softEvictConnections();
+		dataSource.close();
 		try {
 			assertThrows(CannotCreateTransactionException.class, () -> users.findByUsername(prefix));
 			assertThrows(CannotCreateTransactionException.class, () -> mqtt.findByUsername(prefix));
 		} finally {
-			// Dispose this pool and reopen using the original test credentials for cleanup.
+			// Reopen a healthy pool for cleanup and subsequent tests.
 			reopenContext();
 		}
 	}
