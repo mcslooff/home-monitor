@@ -3,6 +3,7 @@ package nl.tufa.poc.bme680;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -17,6 +18,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.UUID;
+import java.util.Base64;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
@@ -34,6 +36,7 @@ class PackagedApplicationIT {
 	private static DatabaseFixture database;
 	private static final String BOOTSTRAP_USERNAME = "packaged-" + UUID.randomUUID();
 	private static final String BOOTSTRAP_PASSWORD = "test-" + UUID.randomUUID();
+	private static final String DEVICE_ID = "packaged" + UUID.randomUUID().toString().replace("-", "");
 
 	@BeforeAll
 	static void startDatabase() {
@@ -45,6 +48,7 @@ class PackagedApplicationIT {
 		if (database != null) {
 			try {
 				database.removeHttpTestUser(BOOTSTRAP_USERNAME, BOOTSTRAP_PASSWORD);
+				database.removeMqttTestIdentities(DEVICE_ID);
 			} finally {
 				database.close();
 			}
@@ -62,7 +66,7 @@ class PackagedApplicationIT {
 		assertTrue(Files.isRegularFile(jar), "Run this test with mvn verify to build the JAR first");
 		int mqttPort = availablePort();
 		String brokerUrl = "tcp://127.0.0.1:" + mqttPort;
-		String deviceId = "packagedSmoke";
+		String deviceId = DEVICE_ID;
 		ProcessBuilder builder = new ProcessBuilder(
 				Path.of(System.getProperty("java.home"), "bin", "java").toString(),
 				"-jar", jar.toString(),
@@ -70,8 +74,8 @@ class PackagedApplicationIT {
 				"--server.address=127.0.0.1", "--server.port=0",
 				"--mqtt.broker.host=127.0.0.1", "--mqtt.broker.port=" + mqttPort,
 				"--mqtt.client-id=packaged-" + UUID.randomUUID(),
-				"--mqtt.topic=sensors/test/measur",
-				"--mqtt.producer.enabled=true",
+				"--mqtt.topic=sensors/" + deviceId + "/measur",
+				"--mqtt.producer.enabled=false",
 				"--camel.component.paho.broker-url=" + brokerUrl)
 				.directory(workingDirectory.toFile())
 				.redirectErrorStream(true)
@@ -83,6 +87,25 @@ class PackagedApplicationIT {
 
 		Process application = builder.start();
 		try {
+			awaitLog(application, log, "Started App in");
+			assertFalse(readLog(log).contains("telemetry.moquette"));
+			assertFalse(readLog(log).contains(".moquette_uuid"));
+			assertFalse(Files.exists(workingDirectory.resolve("data")));
+			var provisioningPort = Pattern.compile("Tomcat started on port (\\d+)").matcher(readLog(log));
+			assertTrue(provisioningPort.find(), () -> readLog(log));
+			String api = "http://127.0.0.1:" + provisioningPort.group(1);
+			var device = provision(api, "/devices", "{\"username\":\"" + deviceId + "\",\"deviceId\":\"" + deviceId + "\"}");
+			var service = provision(api, "/services", "{\"username\":\"" + deviceId + "-backend\"}");
+			application.destroy();
+			assertTrue(application.waitFor(20, TimeUnit.SECONDS));
+			builder.command().removeIf(argument -> argument.startsWith("--mqtt.client-id=")
+					|| argument.startsWith("--mqtt.producer.enabled="));
+			builder.command().addAll(java.util.List.of(
+					"--mqtt.consumer.enabled=true", "--mqtt.producer.enabled=true",
+					"--mqtt.client-id=" + service.identity().username() + ":v1",
+					"--camel.component.paho.user-name=" + service.identity().username(),
+					"--camel.component.paho.password=" + service.secret()));
+			application = builder.start();
 			awaitLog(application, log, "Started App in");
 			assertTrue(readLog(log).contains("host=127.0.0.1, port=" + mqttPort),
 					() -> readLog(log));
@@ -102,11 +125,17 @@ class PackagedApplicationIT {
 				assertEquals(401, http.send(request, HttpResponse.BodyHandlers.discarding()).statusCode());
 			}
 
-			try (MqttClient client = new MqttClient(brokerUrl, "probe-" + UUID.randomUUID(),
+			try (MqttClient anonymous = new MqttClient(brokerUrl, "anonymous", new MemoryPersistence())) {
+				assertThrows(org.eclipse.paho.client.mqttv3.MqttException.class, () -> anonymous.connect());
+			}
+			try (MqttClient client = new MqttClient(brokerUrl, device.identity().clientIds().getFirst(),
 					new MemoryPersistence())) {
 				MqttConnectOptions options = new MqttConnectOptions();
 				options.setConnectionTimeout(5);
 				options.setCleanSession(true);
+				options.setMqttVersion(MqttConnectOptions.MQTT_VERSION_3_1_1);
+				options.setUserName(device.identity().username());
+				options.setPassword(device.secret().toCharArray());
 				client.setTimeToWait(5000);
 				client.connect(options);
 				try {
@@ -125,7 +154,7 @@ class PackagedApplicationIT {
 							  }
 							}
 							""".formatted(deviceId);
-					client.publish("sensors/test/measur", payload.getBytes(StandardCharsets.UTF_8), 1, false);
+					client.publish("sensors/" + deviceId + "/measur", payload.getBytes(StandardCharsets.UTF_8), 1, false);
 					// Observe the normal service boundary, not just the broker's PUBACK.
 					awaitLog(application, log, "deviceId=" + deviceId);
 				} finally {
@@ -145,6 +174,20 @@ class PackagedApplicationIT {
 		// A terminated broker must release the port for another application/test.
 		try (ServerSocket socket = new ServerSocket(mqttPort, 1, InetAddress.getByName("127.0.0.1"))) {
 			assertEquals(mqttPort, socket.getLocalPort());
+		}
+	}
+
+	private static nl.tufa.poc.bme680.identity.application.IssuedMqttCredential provision(
+			String api, String path, String body) throws Exception {
+		try (HttpClient http = HttpClient.newHttpClient()) {
+			var response = http.send(HttpRequest.newBuilder(URI.create(api + "/admin/mqtt-identities" + path))
+					.header("Authorization", "Basic " + Base64.getEncoder().encodeToString(
+							(BOOTSTRAP_USERNAME + ":" + BOOTSTRAP_PASSWORD).getBytes(StandardCharsets.UTF_8)))
+					.header("Content-Type", "application/json")
+					.POST(HttpRequest.BodyPublishers.ofString(body)).build(), HttpResponse.BodyHandlers.ofString());
+			assertEquals(201, response.statusCode());
+			return tools.jackson.databind.json.JsonMapper.builder().build().readValue(response.body(),
+					nl.tufa.poc.bme680.identity.application.IssuedMqttCredential.class);
 		}
 	}
 

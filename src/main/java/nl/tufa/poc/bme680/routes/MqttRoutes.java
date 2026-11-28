@@ -26,10 +26,11 @@ public class MqttRoutes extends RouteBuilder {
 
         // Consumer: receive MQTT payloads and log them.
         from("paho:{{mqtt.topic}}"
-                + "?clientId={{mqtt.client-id}}-consumer"
+                + "?clientId={{mqtt.client-id}}:consumer"
                 + "&qos=1"
                 + "&cleanSession=true")
             .routeId("mqtt-consumer")
+            .autoStartup("{{mqtt.consumer.enabled}}")
             .startupOrder(1)
             .unmarshal()
             	.json(JsonLibrary.Jackson, Bme680MeasurementDto.class)  
@@ -53,9 +54,10 @@ public class MqttRoutes extends RouteBuilder {
                 );
             })
             .to("paho:{{mqtt.producer.topic}}"
-                + "?clientId={{mqtt.client-id}}-producer"
+                + "?clientId={{mqtt.client-id}}:producer"
                 + "&qos=1"
                 + "&cleanSession=true"
+                + "&lazyStartProducer=true"
                 + "&retained=false")
             .log("Published MQTT measurement");
 
