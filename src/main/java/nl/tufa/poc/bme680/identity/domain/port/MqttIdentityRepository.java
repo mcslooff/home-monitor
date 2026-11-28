@@ -11,6 +11,12 @@ public interface MqttIdentityRepository {
 
 	Optional<MqttIdentity> findByUsername(String username);
 
+	Optional<MqttIdentity> findById(long id);
+
+	Optional<MqttIdentity> findByDeviceId(String deviceId);
+
+	List<MqttIdentity> findAll();
+
 	void addGrant(MqttGrant grant);
 
 	List<MqttGrant> findGrants(long identityId);

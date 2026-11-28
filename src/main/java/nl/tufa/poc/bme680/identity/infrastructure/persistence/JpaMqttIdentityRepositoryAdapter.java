@@ -30,6 +30,24 @@ public class JpaMqttIdentityRepositoryAdapter implements MqttIdentityRepository 
 	}
 
 	@Override
+	@Transactional(readOnly = true)
+	public Optional<MqttIdentity> findById(long id) {
+		return identities.findById(id).map(IdentityPersistenceMapper::toDomain);
+	}
+
+	@Override
+	@Transactional(readOnly = true)
+	public Optional<MqttIdentity> findByDeviceId(String deviceId) {
+		return identities.findByDeviceId(deviceId).map(IdentityPersistenceMapper::toDomain);
+	}
+
+	@Override
+	@Transactional(readOnly = true)
+	public List<MqttIdentity> findAll() {
+		return identities.findAllByOrderByIdAsc().stream().map(IdentityPersistenceMapper::toDomain).toList();
+	}
+
+	@Override
 	@Transactional
 	public void addGrant(MqttGrant grant) {
 		grants.saveAndFlush(IdentityPersistenceMapper.toEntity(grant));

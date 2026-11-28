@@ -44,6 +44,7 @@ public class MqttRoutes extends RouteBuilder {
         // Producer: reusable route for publishing a JSON string.
         from("direct:publishMeasurement")
             .routeId("mqtt-producer")
+            .autoStartup("{{mqtt.producer.enabled}}")
             .startupOrder(2)
             .process(exchange -> {
                 String json = exchange.getMessage().getBody(String.class);
@@ -51,7 +52,7 @@ public class MqttRoutes extends RouteBuilder {
                     json.getBytes(StandardCharsets.UTF_8)
                 );
             })
-            .to("paho:{{mqtt.topic}}"
+            .to("paho:{{mqtt.producer.topic}}"
                 + "?clientId={{mqtt.client-id}}-producer"
                 + "&qos=1"
                 + "&cleanSession=true"

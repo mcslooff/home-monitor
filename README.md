@@ -112,7 +112,7 @@ Alle HTTP-aanvragen gebruiken Basic-authenticatie. Er worden geen authenticaties
 | `PUT /admin/users/{id}/password` | `ADMIN` | `password`; bij succes `204`, geen responsbody |
 | `PUT /admin/users/{id}/enabled` | `ADMIN` | `{"enabled":false}` |
 
-Rollen zijn `USER`, `ADMIN` en `SENSOR`; meerdere rollen kunnen expliciet worden toegekend. `ADMIN` geeft niet automatisch toegang tot ingestie en `USER` geeft geen impliciete beheer- of ingestietoegang. Niet-genoemde API-mogelijkheden zijn standaard geblokkeerd, inclusief geneste `/bme680/...`-paden. MQTT-accounts kunnen zich niet als HTTP-gebruiker aanmelden. MQTT-beheerendpoints worden pas in ticket #4 toegevoegd.
+Rollen zijn `USER`, `ADMIN` en `SENSOR`; meerdere rollen kunnen expliciet worden toegekend. `ADMIN` geeft niet automatisch toegang tot ingestie en `USER` geeft geen impliciete beheer- of ingestietoegang. Niet-genoemde API-mogelijkheden zijn standaard geblokkeerd, inclusief geneste `/bme680/...`-paden. MQTT-accounts kunnen zich niet als HTTP-gebruiker aanmelden.
 
 Alle mutaties vereisen `Content-Type: application/json` en een gevalideerde JSON-body. Verplicht ontbrekende of ongeldige velden leveren `400` op; een bestaande gebruikersnaam of verwijderen van de laatste actieve beheerder geeft `409`; een onbekende gebruikers-ID geeft `404`. Gebruikersnamen zijn niet wijzigbaar. Aanmaken geeft `201` met uitsluitend veilige accountmetadata terug. Wachtwoorden en hashes worden nooit teruggestuurd of als requestdiagnostiek gelogd.
 
@@ -131,6 +131,45 @@ java -jar target/bme680-0.0.1-SNAPSHOT.jar \
 ```
 
 De MQTT-broker staat voorlopig nog anonieme verbindingen toe. Stel deze niet bloot aan een onvertrouwd netwerk; brokerbeveiliging volgt in tickets #5 en #6.
+
+### MQTT-accounts en topicrechten beheren
+
+**Dit is provisioning, nog geen brokerbeveiliging.** De beheer-API bewaart accounts, hashes en rechten, maar Moquette controleert deze gegevens pas na ticket #5 en handhaaft topics pas na ticket #6. Camel-credentials en de overgang van de bestaande gedeelde topic naar apparaatgebonden topics volgen in ticket #7. Verander operationele sensornodes nog niet zonder die gecoördineerde omschakeling.
+
+Alle onderstaande aanvragen vereisen HTTP Basic met de rol `ADMIN`. Mutaties vereisen `Content-Type: application/json`; dezelfde JSON/CSRF-regels als bij gebruikersbeheer gelden.
+
+| Aanvraag | JSON-inhoud | Resultaat |
+| --- | --- | --- |
+| `GET /admin/mqtt-identities` | Geen | Alleen niet-geheime accountmetadata en exacte grants |
+| `POST /admin/mqtt-identities/devices` | `username`, `deviceId` | `201`: accountmetadata en eenmalig gegenereerde `secret` |
+| `POST /admin/mqtt-identities/services` | `username` | `201`: apart backendaccount en eenmalige `secret` |
+| `POST /admin/mqtt-identities/{id}/credentials` | `{}` | `200`: metadata en eenmalige vervangende `secret` |
+| `PUT /admin/mqtt-identities/{id}/enabled` | `{"enabled":false}` of `{"enabled":true}` | Alleen metadata, nooit een secret |
+
+Een apparaat-ID bevat 1–64 ASCII-tekens uit `A-Z`, `a-z`, `0-9`, `_` en `-`; slash, punten, wildcards en `$`-systeemnamen zijn verboden. MQTT-gebruikersnamen volgen hetzelfde naamformaat als HTTP-gebruikersnamen, maar worden in een afzonderlijk accountdomein opgeslagen. Dubbele MQTT-namen of apparaat-ID's geven `409`; ongeldige invoer geeft `400`; een onbekende account-ID geeft `404`.
+
+Nieuwe accounts worden ingeschakeld aangemaakt. Elk apparaat krijgt uitsluitend `PUBLISH` op `sensors/<deviceId>/measur` en geen subscribe-recht. Er bestaat geen endpoint om willekeurige grants, wildcards of een ander accounttype aan een apparaat toe te voegen. Gebruikersnaam, apparaat-ID en accounttype zijn niet wijzigbaar; schakel een oud account uit en provision een nieuw account bij een identiteitswijziging.
+
+SERVICE-accounts staan los van apparaten en van HTTP-gebruikers. Elk backendaccount krijgt afzonderlijke `SUBSCRIBE`-grants op de exacte meettopics van alle geregistreerde apparaten, niet op `#`, `sensors/+` of systeemtopics. Nieuwe apparaten voegen ook de benodigde exacte subscriptions toe aan bestaande serviceaccounts. De aanmaakvolgorde verandert deze rechten niet. Dit gebeurt samen met accountaanmaak in één eigen, exclusieve transactie; Flyway V3 voegt daarvoor `mqtt_administration_lock` toe. Geef het runtime-databaseaccount ook `SELECT`/`UPDATE` op die tabel.
+
+Secrets worden server-side gemaakt met 32 cryptografisch willekeurige bytes (256 bits), weergegeven als 43 Base64URL-tekens. De API accepteert geen zelf opgegeven wachtwoorden. Alleen een BCrypt-hash wordt opgeslagen. Alleen de succesvolle aanmaak- of rotatierespons bevat de plaintext `secret`, met `Cache-Control: no-store`; kopieer deze direct naar de beveiligde apparaat- of backendconfiguratie. List- en enabled-responses bevatten geen secrets of hashes. Bij verlies van een secret moet deze worden geroteerd, niet teruggelezen. Gebruik HTTPS en voorkom het loggen van secret-responsen door clients of proxies.
+
+Rotatie vervangt de hash atomair en bewaart apparaat-ID, grants en enabled-status; een uitgeschakeld account wordt daardoor niet opnieuw ingeschakeld. De oude secret matcht daarna niet meer met de opgeslagen hash. De enabled-status wordt eveneens persistent bijgewerkt.
+
+**Vereist lifecyclecontract voor ticket #5:** uitschakelen en rotatie moeten naast de databasewijziging alle bestaande MQTT-sessies van de betreffende principal beëindigen, ook bij meerdere client-ID's. Oude credentials mogen niet opnieuw verbinden. De brokerintegratie moet voorkomen dat fouten bij revocatie oude permissieve sessies achterlaten; alleen een controle tijdens een volgende CONNECT is onvoldoende. Deze live-sessiegarantie is in deze provisioningstap nadrukkelijk nog niet actief.
+
+### Optionele demo-publisher
+
+De Camel-route `direct:publishMeasurement` is nu standaard gestopt; normale MQTT-consumptie blijft ongewijzigd. Dit voorkomt dat een backendaccount onnodig publish-rechten nodig heeft.
+
+| Variabele | Standaard | Betekenis |
+| --- | --- | --- |
+| `MQTT_PRODUCER_ENABLED` | `false` | Expliciet starten van de demo-publisher |
+| `MQTT_PRODUCER_TOPIC` | Huidige `mqtt.topic` | Eén concreet publish-topic |
+
+Als de publisher ingeschakeld is, krijgt een nieuw SERVICE-account aanvullend uitsluitend `PUBLISH` op het geconfigureerde producer-topic. Dat topic moet exact `sensors/<deviceId>/measur` zijn en verwijzen naar een al geprovisiond apparaat; anders wordt serviceprovisioning geweigerd. Provision daarom eerst het betreffende apparaat. Bij uitgeschakelde publisher krijgen nieuwe serviceaccounts geen publish-grant.
+
+Een configuratiewijziging herschrijft bestaande grants niet automatisch. Schakel een eerder serviceaccount uit en provision een nieuw, passend account als de publisherfunctie of het producer-topic verandert. Er worden geen MQTT-servicecredentials automatisch in Camel ingesteld; die integratie blijft ticket #7.
 
 ## Roadmap
 
