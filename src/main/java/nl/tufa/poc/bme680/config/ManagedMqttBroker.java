@@ -18,7 +18,9 @@ import io.moquette.broker.config.MemoryConfig;
 import io.moquette.broker.security.IAuthorizatorPolicy;
 import io.moquette.broker.subscriptions.Topic;
 import nl.tufa.poc.bme680.identity.application.MqttAuthenticationService;
+import nl.tufa.poc.bme680.identity.application.MqttAuthorizationService;
 import nl.tufa.poc.bme680.identity.application.MqttBrokerUnavailableException;
+import nl.tufa.poc.bme680.identity.domain.model.MqttGrant.Permission;
 import nl.tufa.poc.bme680.identity.application.port.MqttSessionBarrier;
 
 /**
@@ -30,6 +32,7 @@ public final class ManagedMqttBroker implements MqttSessionBarrier {
 	private static final Logger LOG = LoggerFactory.getLogger(ManagedMqttBroker.class);
 	private final Properties properties;
 	private final MqttAuthenticationService authentication;
+	private final MqttAuthorizationService authorization;
 	private Server server;
 	private Admission admission = new Admission();
 
@@ -38,10 +41,12 @@ public final class ManagedMqttBroker implements MqttSessionBarrier {
 		boolean open;
 	}
 
-	public ManagedMqttBroker(Properties properties, MqttAuthenticationService authentication) {
+	public ManagedMqttBroker(Properties properties, MqttAuthenticationService authentication,
+			MqttAuthorizationService authorization) {
 		this.properties = new Properties();
 		this.properties.putAll(properties);
 		this.authentication = authentication;
+		this.authorization = authorization;
 	}
 
 	public synchronized void start() throws IOException {
@@ -58,14 +63,14 @@ public final class ManagedMqttBroker implements MqttSessionBarrier {
 			next.startServer(new MemoryConfig(properties), List.of(), null,
 					(clientId, username, password) -> authenticate(epoch, clientId, username, password),
 					new IAuthorizatorPolicy() {
-						// Topic ACLs are ticket #6. These guards only fence invalid session principals.
+						// Moquette invokes this for normal PUBLISH/SUBSCRIBE, not wills or each delivery.
 						@Override
 						public boolean canRead(Topic topic, String username, String clientId) {
-							return current(epoch, clientId, username);
+							return permitted(epoch, clientId, username, topic, Permission.SUBSCRIBE);
 						}
 						@Override
 						public boolean canWrite(Topic topic, String username, String clientId) {
-							return current(epoch, clientId, username);
+							return permitted(epoch, clientId, username, topic, Permission.PUBLISH);
 						}
 					});
 		} catch (IOException | RuntimeException failure) {
@@ -104,11 +109,16 @@ public final class ManagedMqttBroker implements MqttSessionBarrier {
 		}
 	}
 
-	private boolean current(Admission epoch, String clientId, String username) {
+	private boolean permitted(Admission epoch, String clientId, String username, Topic topic, Permission permission) {
 		epoch.lock.readLock().lock();
 		try {
-			return epoch.open && authentication.isCurrentSession(clientId, username);
+			boolean allowed = epoch.open && authorization.permits(username, clientId, topic.toString(), permission);
+			if (!allowed) {
+				LOG.warn("MQTT topic operation denied");
+			}
+			return allowed;
 		} catch (RuntimeException failure) {
+			LOG.warn("MQTT topic operation denied: identity or grant store unavailable");
 			return false;
 		} finally {
 			epoch.lock.readLock().unlock();

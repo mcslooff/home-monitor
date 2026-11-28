@@ -8,6 +8,7 @@ import org.springframework.context.annotation.Configuration;
 
 import nl.tufa.poc.bme680.identity.application.MqttAdministrationService;
 import nl.tufa.poc.bme680.identity.application.MqttAuthenticationService;
+import nl.tufa.poc.bme680.identity.application.MqttAuthorizationService;
 import nl.tufa.poc.bme680.identity.application.port.MqttAdministrationTransaction;
 import nl.tufa.poc.bme680.identity.application.port.MqttSecretGenerator;
 import nl.tufa.poc.bme680.identity.application.port.PasswordHasher;
@@ -17,6 +18,11 @@ import nl.tufa.poc.bme680.identity.domain.port.MqttIdentityRepository;
 
 @Configuration(proxyBeanMethods = false)
 public class MqttIdentityConfiguration {
+	@Bean
+	MqttAuthorizationService mqttAuthorizationService(MqttIdentityRepository identities) {
+		return new MqttAuthorizationService(identities);
+	}
+
 	@Bean
 	MqttAuthenticationService mqttAuthenticationService(MqttIdentityRepository identities, PasswordVerifier passwords) {
 		return new MqttAuthenticationService(identities, passwords);
